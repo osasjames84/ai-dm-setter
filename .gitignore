@@ -1,0 +1,3 @@
+node_modules/
+dmsetter.sqlite
+.env

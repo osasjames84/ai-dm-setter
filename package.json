@@ -1,0 +1,17 @@
+{
+  "name": "dm-setter",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "AI DM setter — replies to leads as the coach, qualifies, books calls. Local-first SetDM alternative.",
+  "engines": {
+    "node": ">=23"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.109.1",
+    "express": "^4.19.2"
+  }
+}
