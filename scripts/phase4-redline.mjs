@@ -182,7 +182,10 @@ async function testMax2Guardrail() {
 // ---------------------------------------------------------------- test 4
 async function testNeedsHumanDrop() {
   const id = await spawnManual('needs_human_guard', 'autopilot');
-  await req('POST', `/api/conversations/${id}/lead-message`, { text: 'wait is this a bot? am i talking to a real person or an automated system?' });
+  // A genuine human-review trigger (payment/refund/chargeback). NOTE: a casual
+  // "is this a bot?" is now handled by the AI itself (per the setter methodology),
+  // so it no longer flags — only off-script things like this do.
+  await req('POST', `/api/conversations/${id}/lead-message`, { text: 'i paid you $500 last month and i want a full refund right now or im calling my bank for a chargeback' });
 
   const final = await pollConv(id, (c) =>
     c.conversation?.needs_human === true && !!c.pending_draft, { timeoutMs: 45_000 });
@@ -302,7 +305,7 @@ function startServer() {
     const to = setTimeout(() => reject(new Error('server did not boot in 15s')), 15_000);
     child.stdout.on('data', (b) => {
       process.stdout.write(`[server] ${b}`);
-      if (/AI DM SETTER on http/.test(String(b))) { clearTimeout(to); resolve(); }
+      if (/(dmSetter|AI DM SETTER) on http/.test(String(b))) { clearTimeout(to); resolve(); }
     });
     child.on('exit', (code) => { clearTimeout(to); reject(new Error(`server exited early (code ${code})`)); });
   });

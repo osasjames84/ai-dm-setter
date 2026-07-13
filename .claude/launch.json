@@ -5,7 +5,6 @@
       "name": "dm-setter",
       "runtimeExecutable": "node",
       "runtimeArgs": ["server.js"],
-      "cwd": ".",
       "port": 5220
     }
   ]
