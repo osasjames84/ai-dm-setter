@@ -191,7 +191,6 @@ const SETTING_DEFAULTS = {
   response_min: '10',               // Autopilot › Response Time min seconds
   response_max: '30',               // Autopilot › Response Time max seconds
   typing_indicator: '0',            // Instagram typing indicator toggle
-  blocked_countries: '',            // Qualification Criteria
   languages: '',
   min_age: '',
   flag_send_final: '0',             // Flag Handling › send final message before flagging

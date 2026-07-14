@@ -3007,7 +3007,6 @@ function syncSettingsFromDom() {
   set('response_max', val('set-resp-max'));
   const typing = checked('set-typing');
   if (typing !== undefined) s.typing_indicator = typing ? '1' : '0';
-  set('blocked_countries', val('set-blocked'));
   set('languages', val('set-languages'));
   set('min_age', val('set-minage'));
   const flagFinal = checked('set-flag-final');
@@ -3370,7 +3369,6 @@ async function loadIgStatus() {
 /* stable reason codes → label + placeholder, in the exact grid order from the spec */
 const FLAG_REASONS = [
   ['underage', 'Underage', 'Appreciate it, but I only work with 18+.'],
-  ['blocked_country', 'Blocked Country', "Appreciate the message. I can't support your region right now."],
   ['cant_afford', "Can't Afford", 'All good. Hit me up when timing is better.'],
   ['not_interested', 'Not Interested', 'No worries at all, appreciate the honesty.'],
   ['wrong_fit', 'Wrong Fit', "Got it. Doesn't sound like the right fit for now."],
@@ -3501,9 +3499,6 @@ function renderSettings() {
 
     /* 6 — Qualification Criteria */
     '<div class="card settings-card">' + cardHeadHtml(chipHtml('target', '#a5b4fc', 'var(--indigo-soft)'), 'Qualification Criteria', 'Filter who the AI engages with') +
-    '<div class="set-field"><div class="field-label">Blocked Countries</div>' +
-    '<input id="set-blocked" type="text" placeholder="India, Nigeria, Philippines" value="' + esc(s.blocked_countries) + '">' +
-    '<p class="set-help">Comma-separated. AI won\'t engage with people from these countries.</p></div>' +
     '<div class="set-two"><div class="set-field"><div class="field-label">Languages</div>' +
     '<input id="set-languages" type="text" placeholder="English" value="' + esc(s.languages) + '"></div>' +
     '<div class="set-field"><div class="field-label">Minimum Age</div>' +
@@ -3624,7 +3619,6 @@ function renderSettings() {
         response_min: $('#set-resp-min').value,
         response_max: $('#set-resp-max').value,
         typing_indicator: $('#set-typing').querySelector('input').checked ? '1' : '0',
-        blocked_countries: $('#set-blocked').value,
         languages: $('#set-languages').value,
         min_age: $('#set-minage').value,
         flag_send_final: $('#set-flag-final').querySelector('input').checked ? '1' : '0',
