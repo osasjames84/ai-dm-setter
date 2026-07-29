@@ -3490,7 +3490,7 @@ function renderSettings() {
     '<div class="card settings-card">' + cardHeadHtml(chipHtml('robot', '#a5b4fc', 'var(--indigo-soft)'), 'Autopilot', 'Let AI handle conversations automatically') +
     '<div class="set-sub ring"><div class="set-sub-head">' + chipHtml('stopwatch', '#a5b4fc', 'var(--indigo-soft)') +
     '<span class="st">Response Time <span class="tag indigo set-badge">Important</span></span></div>' +
-    '<p class="set-help">Random delay before AI replies (feels more human)</p>' +
+    '<p class="set-help">Total time from the lead’s message to the reply landing (feels more human). The AI’s thinking time counts toward it — if thinking runs past the window, the reply sends as soon as it’s ready.</p>' +
     '<div class="rt-controls"><input id="set-resp-min" type="number" min="0" value="' + esc(s.response_min) + '"><span class="rt-to">to</span>' +
     '<input id="set-resp-max" type="number" min="0" value="' + esc(s.response_max) + '">' +
     '<select id="set-resp-unit"><option value="seconds" selected>seconds</option></select></div></div>' +
