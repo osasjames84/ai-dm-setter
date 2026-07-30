@@ -134,7 +134,7 @@ const SETTING_DEFAULTS = {
   prompt_voice: 'Describe how you text: tone, length, punctuation, emoji habits.',
   prompt_hard_rules: 'List things the AI must NEVER do, one per line.',
   coach_name: '',
-  default_mode: 'copilot',
+  default_mode: 'off',              // AI is opt-in per thread: handoff phrase (owner) or keyword (lead)
   kill_switch: '0',
   followup_1_hours: '4',
   followup_2_hours: '23',
@@ -196,7 +196,7 @@ const SETTING_DEFAULTS = {
   flag_send_final: '0',             // Flag Handling › send final message before flagging
   flag_final_message: '',           // fallback final message
   flag_messages: '{}',              // {reason_code: message} per-reason overrides
-  flag_enabled: JSON.stringify({ cursing: true, disrespectful: true, other: true }), // {reason_code: bool} — ONLY these scenarios flag; everything else the AI handles itself
+  flag_enabled: '{}',               // {reason_code: bool} — the OWNER opts in per scenario in Settings › Flag Handling; NOTHING flags by default
 
   // ---- System state (not user-editable via the Settings form) ----
   ig_auth_error: '',                // JSON {at, detail} when the IG token is dead/revoked; '' when healthy (FEATURE 2)
@@ -312,6 +312,24 @@ try {
     console.log('[migrate] turned AI off for ' + info.changes + ' legacy dead conversation(s)');
   }
 } catch (e) { console.error('[migrate] dead ai-off backfill failed:', e.message); }
+
+// One-time backfill (idempotent, flag-guarded): AI-OFF-BY-DEFAULT (owner's
+// 2026-07-30 direction — the AI must NOT engage every chat; it opts IN per
+// thread via his handoff phrase or the lead's keyword). Existing conversations
+// that never showed real funnel intent — early-stage (lead/engaged/routed) and
+// never keyword-triggered — go to mode 'off'. This is where personal contacts
+// and synced-history threads live; the AI had been free-running on them.
+// Active pipeline threads (qualifying and beyond) and keyword-triggered leads
+// keep their current mode — those engaged the funnel deliberately.
+try {
+  const done = db.prepare("SELECT value FROM settings WHERE key = '_default_off_backfill_v1'").get();
+  if (!done) {
+    const info = db.prepare(`UPDATE conversations SET mode = 'off'
+      WHERE stage IN ('lead', 'engaged', 'routed') AND kw_triggered = 0 AND mode != 'off'`).run();
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('_default_off_backfill_v1', '1')").run();
+    console.log('[migrate] AI-off-by-default: turned AI off for ' + info.changes + ' non-funnel conversation(s)');
+  }
+} catch (e) { console.error('[migrate] default-off backfill failed:', e.message); }
 
 function requireAdmin(req, res, next) {
   if (String(req.headers['x-admin-pin'] || '') !== ADMIN_PIN) {
@@ -1452,6 +1470,17 @@ async function ingestMessage(conv, ev) {
   const useMid = () => (midUsed ? null : ((midUsed = true), ev.mid));
 
   if (ev.text) addMessage(conv.id, role, ev.text, 'human', useMid(), null, null);
+
+  // "Turn On AI When I Send…" must work from the owner's PHONE, not just the
+  // dashboard composer: phone sends arrive here as webhook echoes and never pass
+  // through deliver()'s phrase check. Same rule as deliver(): an outbound human
+  // message matching a handoff phrase flips this chat to autopilot. (The AI then
+  // waits for the lead's next reply — the owner just sent the opener himself.)
+  if (role === 'setter' && ev.text && conv.mode !== 'autopilot'
+      && matchExactPhrase(ev.text, parseJ(getSetting('ai_on_phrases'), []))) {
+    setMode(conv.id, 'autopilot');
+    console.log(`[ai-on] handoff phrase echoed from owner's phone → autopilot (@${conv.handle})`);
+  }
 
   for (const att of ev.attachments || []) {
     const kind = attachmentKind(att.type);

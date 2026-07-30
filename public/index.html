@@ -2712,11 +2712,11 @@ function renderScriptWorkspace() {
         '<button type="button" class="row-x" data-phrase-x="' + i + '">' + icon('x', 15) + '</button></div>').join('')
     : '';
   const aiOn = scriptCard('aion', 'Turn On AI When I Send…',
-    'AI activates when your outbound message exactly matches any phrase below.',
+    'AI activates when your outbound message matches any phrase below — from the dashboard or your phone.',
     null, ACC.indigo,
     '<div class="phrase-list">' + phraseRows + '</div>' +
     '<button type="button" class="btn-solid-indigo" data-add="phrase">' + icon('plus', 15) + 'Add phrase</button>' +
-    '<div class="sc-help" style="margin-top:12px"><b>Exact match</b> — When you send any of these messages (as coach), autopilot turns on. Whitespace is normalized; add one phrase per field.</div>',
+    '<div class="sc-help" style="margin-top:12px"><b>Whole-message match</b> — When you send any of these messages (as coach, incl. from the Instagram app on your phone), autopilot turns on for that chat. Case, punctuation and spacing are ignored, but the message must be the whole phrase. One phrase per field.</div>',
     { dot: true });
 
   // 9. Core Sequences

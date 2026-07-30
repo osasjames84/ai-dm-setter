@@ -84,6 +84,11 @@ const CONFIG = {
   community_link: 'https://example.com/community',
   followup_1_hours: '2',   // FAST_TIMERS reads these as SECONDS
   followup_2_hours: '3',
+  followup_3_hours: '',    // long-game ladder steps OFF → deterministic 2-step tests
+  followup_4_hours: '',
+  // Toggles-only flagging: nothing flags unless the owner enables it. Tests that
+  // expect a flag (T4) rely on these two being on, mirroring a configured owner.
+  flag_enabled: JSON.stringify({ cursing: true, disrespectful: true }),
   kill_switch: '0',
   default_mode: 'copilot',
 };
@@ -139,8 +144,10 @@ async function testBrokeRedline() {
   check('T2 broke: NEVER reaches booking_sent/call_booked/sale',
     everBooked === false && !BOOKING_STAGES.includes(stageOf(final)), `stage=${stageOf(final)}`);
   check('T2 broke: community link was sent', sawCommunityLink, `sent=${JSON.stringify(sentTexts(final))}`);
-  check('T2 broke: routed OR needs_human (never booked)',
-    stageOf(final) === 'routed' || final?.conversation?.needs_human === true,
+  // 'dead' is a VALID terminal here: confirmed can't-afford runs the soft-disqual
+  // warm goodbye + free resource and ends the thread (affordability failed-redemption).
+  check('T2 broke: routed OR dead OR needs_human (never booked)',
+    ['routed', 'dead'].includes(stageOf(final)) || final?.conversation?.needs_human === true,
     `stage=${stageOf(final)} nh=${final?.conversation?.needs_human}`);
 }
 
@@ -159,33 +166,35 @@ async function testMax2Guardrail() {
     sentTexts(afterFirst).length >= 1 && !afterFirst?.conversation?.needs_human, `sent=${sentTexts(afterFirst).length}`);
   // Pin the stage to 'qualified' so the conversation is a follow-up candidate
   // regardless of what the engine suggested (engaged/qualifying both possible).
-  // PATCH stage does NOT touch consecutive_ai_sends, so the counter (=1) stands.
   await req('PATCH', `/api/conversations/${id}`, { stage: 'qualified' });
 
-  // Now the last message is the setter's and the lead is quiet → the follow-up
-  // sweep fires #1 (AI turn #2), then #2 (would be AI turn #3 → BLOCKED as a
-  // pending draft by the max-2 guardrail). The guardrail counts AI *turns*
-  // (consecutive_ai_sends), not raw bubbles — a turn may be 2 messages — so we
-  // assert the turn counter never exceeds 2 and the 3rd turn becomes a draft.
-  let maxTurns = afterFirst?.conversation?.consecutive_ai_sends ?? 0;
-  const final = await pollTracking(id, (c) => {
-    maxTurns = Math.max(maxTurns, c.conversation?.consecutive_ai_sends ?? 0);
-    return !!c.pending_draft && /limit reached/i.test(c.pending_draft?.reason || '');
-  }, { timeoutMs: 60_000, everyMs: 1_200 });
-
-  const draft = final?.pending_draft;
-  check('T3 max-2: a 3rd consecutive AI turn became a pending draft, not a send',
-    !!draft && /limit reached/i.test(draft?.reason || '') && maxTurns <= 2,
-    `maxTurns=${maxTurns} draftReason=${JSON.stringify(draft?.reason)}`);
+  // CURRENT design (since the Wave-1 exemption): scheduled follow-ups are EXEMPT
+  // from the inbound max-2 ceiling and are capped by the LADDER instead (2 steps
+  // in this config). With the lead quiet: fu#1 and fu#2 SEND, then the thread
+  // goes DORMANT — no further sends, and the sweep must NEVER auto-mark dead.
+  const exhausted = await pollConv(id, (c) => (c.conversation?.followup_count ?? 0) >= 2,
+    { timeoutMs: 45_000, everyMs: 1_000 });
+  check('T3 ladder: both follow-ups fired (count=2)',
+    exhausted?.conversation?.followup_count === 2, `count=${exhausted?.conversation?.followup_count}`);
+  // The count is RESERVED before the follow-up delivers, so fu#2's send may
+  // still be in flight — let sends settle before taking the baseline.
+  await new Promise((r) => setTimeout(r, 8_000));
+  const settled = (await req('GET', `/api/conversations/${id}`)).json;
+  const sendsAtExhaustion = sentTexts(settled).length;
+  await new Promise((r) => setTimeout(r, 8_000)); // several sweep ticks past exhaustion
+  const after = (await req('GET', `/api/conversations/${id}`)).json;
+  check('T3 dormant: no sends past the ladder, never auto-dead',
+    sentTexts(after).length === sendsAtExhaustion && stageOf(after) !== 'dead',
+    `sends=${sentTexts(after).length} vs ${sendsAtExhaustion} stage=${stageOf(after)}`);
 }
 
 // ---------------------------------------------------------------- test 4
 async function testNeedsHumanDrop() {
   const id = await spawnManual('needs_human_guard', 'autopilot');
-  // A genuine human-review trigger (payment/refund/chargeback). NOTE: a casual
-  // "is this a bot?" is now handled by the AI itself (per the setter methodology),
-  // so it no longer flags — only off-script things like this do.
-  await req('POST', `/api/conversations/${id}/lead-message`, { text: 'i paid you $500 last month and i want a full refund right now or im calling my bank for a chargeback' });
+  // Flagging is TOGGLES-ONLY: refund/chargeback talk no longer flags (the 'other'
+  // catch-all is gone — the AI handles it in-chat). The seeded config enables
+  // 'cursing', so an abusive lead is the deterministic flag trigger.
+  await req('POST', `/api/conversations/${id}/lead-message`, { text: 'fuck off with this coaching shit, you lot are all fucking scammers preying on people' });
 
   const final = await pollConv(id, (c) =>
     c.conversation?.needs_human === true && !!c.pending_draft, { timeoutMs: 45_000 });
@@ -252,12 +261,17 @@ async function testFollowupSequence() {
     afterF2?.conversation?.followup_count === 2 && !!afterF2?.pending_draft,
     `count=${afterF2?.conversation?.followup_count}`);
 
-  // Discard #2, then the exhaustion sweep (count>=2) moves it to dead.
+  // Discard #2 → ladder exhausted (count>=2): the sweep goes DORMANT. It must
+  // NEVER auto-mark dead — dead is an explicit human/engine decision only.
   await req('POST', `/api/drafts/${afterF2.pending_draft.id}/discard`);
-  const dead = await pollConv(id, (c) => stageOf(c) === 'dead', { timeoutMs: 40_000, everyMs: 1_000 });
-  check('T6 exhausted: stage → dead', stageOf(dead) === 'dead', `stage=${stageOf(dead)}`);
+  await new Promise((r) => setTimeout(r, 8_000)); // several sweep ticks past exhaustion
+  const dormant = (await req('GET', `/api/conversations/${id}`)).json;
+  check('T6 exhausted: dormant, not dead (count stays 2, no new draft)',
+    stageOf(dormant) !== 'dead' && dormant?.conversation?.followup_count === 2 && !dormant?.pending_draft,
+    `stage=${stageOf(dormant)} count=${dormant?.conversation?.followup_count} draft=${!!dormant?.pending_draft}`);
 
-  // Revive → qualifying, followup_count reset to 0.
+  // Explicit dead (owner action) → revive restores the stage + resets the counter.
+  await req('PATCH', `/api/conversations/${id}`, { stage: 'dead' });
   const revived = await req('PATCH', `/api/conversations/${id}`, { revive: true });
   const rc = (await req('GET', `/api/conversations/${id}`)).json;
   check('T6 revive: dead → qualifying, count reset to 0',
