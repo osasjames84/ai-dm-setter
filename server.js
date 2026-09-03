@@ -49,6 +49,20 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 initKnowledge(DATA_DIR);     // knowledge-base document store (RAG-lite)
 initAttachments(DATA_DIR);   // inbound image/voice/video attachment store
 const db = new DatabaseSync(path.join(DATA_DIR, 'dmsetter.sqlite'));
+// WAL + busy timeout: fewer fsyncs on the 15s sweeps and no SQLITE_BUSY if a
+// second reader (backup, sqlite CLI) touches the file.
+try { db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;'); }
+catch (e) { console.warn('[db] pragmas failed:', e.message); }
+// Tiny transaction helper (node:sqlite has none). Re-entrant: nested calls run
+// inside the outer transaction instead of issuing a second BEGIN.
+let _txDepth = 0;
+function tx(fn) {
+  if (_txDepth > 0) return fn();
+  db.exec('BEGIN'); _txDepth++;
+  try { const r = fn(); db.exec('COMMIT'); return r; }
+  catch (e) { try { db.exec('ROLLBACK'); } catch { /* already rolled back */ } throw e; }
+  finally { _txDepth--; }
+}
 db.exec(`
   CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
   CREATE TABLE IF NOT EXISTS conversations (
@@ -122,6 +136,9 @@ for (const [table, col, def] of [
 // Dedup index on the IG message id — created AFTER the migration so the column
 // exists on both fresh and upgraded databases. Partial: many rows have no mid.
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_mid ON messages(mid) WHERE mid IS NOT NULL'); } catch { /* ignore */ }
+// One conversation per Instagram sender — makes the webhook's find-or-create durable.
+try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_ext ON conversations(channel, external_id) WHERE external_id IS NOT NULL'); }
+catch (e) { console.warn('[db] could not create unique external_id index (duplicate rows?):', e.message); }
 
 // ---------- settings ----------
 const SETTING_DEFAULTS = {
@@ -209,7 +226,8 @@ const SETTING_DEFAULTS = {
   content_analysis: '',             // JSON content-engine payload (mined lead DMs + generated ideas); set by /api/content/* (FEATURE 3)
 };
 const getSetting = (k) => db.prepare('SELECT value FROM settings WHERE key = ?').get(k)?.value ?? null;
-const setSetting = (k, v) => db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(k, String(v));
+let _settingsCache = null; // allSettings() memo — invalidated on every write
+const setSetting = (k, v) => { _settingsCache = null; db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(k, String(v)); };
 for (const [k, v] of Object.entries(SETTING_DEFAULTS)) {
   if (getSetting(k) == null) setSetting(k, v);
 }
@@ -241,8 +259,41 @@ if (!String(getSetting('prompt_voice') || '').trim() && String(getSetting('style
   setSetting('prompt_voice', getSetting('style'));
   console.log('[settings] migrated legacy style → prompt_voice');
 }
-const allSettings = () =>
-  Object.fromEntries(Object.keys(SETTING_DEFAULTS).map((k) => [k, getSetting(k)]));
+// Keys that must NEVER leave the server (the settings blob is polled by the
+// browser every 5s and rides in backups). The frontend gets a boolean instead.
+const SECRET_SETTING_KEYS = new Set(['calendly_token', 'calendly_signing_key', 'content_analysis']);
+/** Every catalogued setting, one query, memoised until the next setSetting(). */
+const allSettingsRaw = () => {
+  if (!_settingsCache) {
+    const out = Object.fromEntries(Object.keys(SETTING_DEFAULTS).map((k) => [k, null]));
+    for (const r of db.prepare('SELECT key, value FROM settings').all()) if (r.key in SETTING_DEFAULTS) out[r.key] = r.value;
+    _settingsCache = out;
+  }
+  return _settingsCache;
+};
+/** Settings as exposed to the browser and the engine: secrets stripped. */
+const allSettings = () => {
+  const raw = allSettingsRaw();
+  const s = { ...raw };
+  for (const k of SECRET_SETTING_KEYS) delete s[k];
+  s.calendly_token_set = !!String(raw.calendly_token || '').trim();
+  return s;
+};
+// Starter script (prompts/starter.json): seeded ONCE into empty prompt sections
+// so the setter has a working script out of the box, and served to the Prompt
+// page's "Fill empty sections" button. Plain data — the owner edits it freely.
+const STARTER_PROMPT = (() => {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'prompts', 'starter.json'), 'utf8')); }
+  catch (e) { console.warn('[settings] no starter prompt loaded:', e.message); return null; }
+})();
+if (STARTER_PROMPT && STARTER_PROMPT.sections && getSetting('_seed_prompt_v1') == null) {
+  let n = 0;
+  for (const [k, v] of Object.entries(STARTER_PROMPT.sections)) {
+    if (k in SETTING_DEFAULTS && !String(getSetting(k) || '').trim() && String(v || '').trim()) { setSetting(k, v); n++; }
+  }
+  setSetting('_seed_prompt_v1', '1');
+  console.log(`[settings] seeded ${n} empty prompt section(s) from prompts/starter.json`);
+}
 // Outbound punctuation cleanup is OPT-IN (Settings › AI Controls › Strip dashes).
 const cleanOutbound = (t) => (getSetting('strip_dashes') === '1' ? stripDashes(t) : String(t ?? ''));
 
@@ -277,6 +328,7 @@ process.on('unhandledRejection', (r) => console.error('[unhandledRejection]', r)
 process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
 
 const app = express();
+app.set('trust proxy', 1); // Railway's edge proxy — needed for req.ip in the PIN lockout
 app.use(express.json({ limit: '2mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.static(path.join(__dirname, 'public')));
 // In-memory multipart handler for knowledge-base uploads (25MB cap, matches the UI).
@@ -365,10 +417,33 @@ try {
   }
 } catch (e) { console.error('[migrate] default-off backfill failed:', e.message); }
 
+// Production must never run on the default PIN.
+const IS_PROD = !!process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV === 'production';
+if (IS_PROD && !process.env.ADMIN_PIN) {
+  console.error('[boot] ADMIN_PIN is not set — refusing to start in production with the default PIN');
+  process.exit(1);
+}
+// PIN brute-force protection: per-IP failure counter; after 5 misses every
+// further miss doubles a lockout (2s, 4s, … capped at 5 min). Timing-safe compare.
+const pinFailures = new Map(); // ip → { n, until }
+const PIN_FREE_FAILURES = 5;
 function requireAdmin(req, res, next) {
-  if (String(req.headers['x-admin-pin'] || '') !== ADMIN_PIN) {
+  const ip = String(req.ip || req.socket?.remoteAddress || '');
+  const rec = pinFailures.get(ip);
+  if (rec && rec.until > Date.now()) {
+    res.set('Retry-After', String(Math.ceil((rec.until - Date.now()) / 1000)));
+    return res.status(429).json({ error: 'Too many wrong PINs — try again shortly' });
+  }
+  const given = Buffer.from(String(req.headers['x-admin-pin'] || ''));
+  const want = Buffer.from(ADMIN_PIN);
+  const ok = given.length === want.length && crypto.timingSafeEqual(given, want);
+  if (!ok) {
+    const n = (rec ? rec.n : 0) + 1;
+    const extra = Math.max(0, n - PIN_FREE_FAILURES);
+    pinFailures.set(ip, { n, until: extra ? Date.now() + Math.min(2 ** extra, 300) * 1000 : 0 });
     return res.status(401).json({ error: 'Wrong PIN' });
   }
+  if (rec) pinFailures.delete(ip);
   next();
 }
 
@@ -417,6 +492,9 @@ function addMessage(convId, role, text, source, mid = null, att_type = null, att
  */
 function setStage(convId, stage) {
   if (!STAGES.includes(stage)) return;
+  return tx(() => setStageInner(convId, stage));
+}
+function setStageInner(convId, stage) {
   const prev = getConv(convId)?.stage;
   db.prepare('UPDATE conversations SET stage = ? WHERE id = ?').run(stage, convId);
   // Owner email (FEATURE 3) on a fresh call_booked — only on the transition INTO
@@ -499,6 +577,11 @@ const normForDedupe = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').
 // mrosashimself). Sim conversations are exempt (tests belong there).
 const TEST_MARKER_RE = /dmsetter\s*test|just testing|\btest \d+\/\d+\b/i;
 
+// Recipient ids with an AI/followup send in flight (Graph call issued, echo not
+// yet reconciled). Instagram can echo our own message BEFORE the Send API
+// returns; without this the echo is stored as a human reply and resets the
+// max-2 autopilot counter. Entries expire on their own.
+const inFlightSends = new Map(); // external_id → expiry epoch ms
 async function deliver(conv, text, source) {
   let sentMid = null;
   // Optional owner-enabled dash cleanup, applied before anything else so every
@@ -539,6 +622,7 @@ async function deliver(conv, text, source) {
         await new Promise((r) => setTimeout(r, Math.min(1000 + filtered.text.length * 45, 8000)));
       } catch { /* presence is best-effort — never block the real message */ }
     }
+    if (source !== 'human') inFlightSends.set(String(conv.external_id), Date.now() + 20_000);
     const sent = await igSendText(conv.external_id, filtered.text);
     sentMid = sent && sent.message_id ? String(sent.message_id) : null;
   }
@@ -590,6 +674,9 @@ function onLeadMessage(convId) {
 
 /** Create an inbound conversation (webhook + sim share this). Stage 'lead', mode = default. */
 function createConversation({ channel, external_id = null, handle, display_name = null, persona = null }) {
+  return tx(() => createConversationInner({ channel, external_id, handle, display_name, persona }));
+}
+function createConversationInner({ channel, external_id, handle, display_name, persona }) {
   const id = newId();
   const mode = MODES.includes(getSetting('default_mode')) ? getSetting('default_mode') : 'copilot';
   db.prepare(`INSERT INTO conversations
@@ -606,6 +693,9 @@ function createConversation({ channel, external_id = null, handle, display_name 
  * @returns the created draft row (raw).
  */
 function storeDraft(convId, messages, stageSuggestion, needsHuman, reason) {
+  return tx(() => storeDraftInner(convId, messages, stageSuggestion, needsHuman, reason));
+}
+function storeDraftInner(convId, messages, stageSuggestion, needsHuman, reason) {
   const msgs = Array.isArray(messages) && messages.length ? messages.slice(0, 2).map((m) => String(m)) : [''];
   discardPending(convId); // at-most-one pending draft
   const info = db.prepare(`INSERT INTO drafts
@@ -673,6 +763,11 @@ function markKwTriggered(convId) {
  * last-message check. lead/engaged are included so a configured seq_lead can
  * fire; without a Core Sequence they still get NO nudge (the sweep skips them).
  */
+/** Role of the newest message in a conversation ('lead' | 'setter' | null). Cheap — the sweep calls it per candidate every 15s. */
+function lastRole(convId) {
+  return db.prepare('SELECT role FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1').get(convId)?.role || null;
+}
+
 function followupCandidates() {
   return db.prepare(`SELECT * FROM conversations
     WHERE stage IN ('lead','engaged','qualifying','qualified','booking_sent') AND needs_human = 0 AND mode != 'off'`).all();
@@ -739,6 +834,7 @@ const scheduler = createScheduler({
   latestLeadText,
   markKwTriggered,
   followupCandidates,
+  lastRole,
   owedReplyConvs,
   bookedConvs,
   markReminderSent,
@@ -765,6 +861,10 @@ onIgAuthError((detail) => {
 
 // ---------- auth / settings ----------
 app.post('/api/auth', requireAdmin, (req, res) => res.json({ ok: true }));
+
+app.get('/api/prompt-starter', requireAdmin, (req, res) => {
+  res.json({ sections: (STARTER_PROMPT && STARTER_PROMPT.sections) || {}, name: (STARTER_PROMPT && STARTER_PROMPT.name) || '' });
+});
 
 app.get('/api/settings', requireAdmin, (req, res) => {
   res.json({
@@ -1597,9 +1697,19 @@ app.get('/webhook/instagram', (req, res) => {
 // IG_APP_SECRET is set; until then it returns true (verification disabled) so
 // setup isn't blocked, but SETTING IG_APP_SECRET is strongly recommended — it's
 // what stops anyone on the internet POSTing forged events to this endpoint.
+let _igUnsignedWarned = false;
 function verifyWebhookSignature(req) {
   const secret = process.env.IG_APP_SECRET;
-  if (!secret) return true;
+  if (!secret) {
+    // Instagram is live but the app secret isn't set: REJECT rather than accept
+    // forged events (which could make the bot DM arbitrary accounts). Only
+    // pre-setup (no page token yet) passes through so the handshake isn't blocked.
+    if (igConfigured()) {
+      if (!_igUnsignedWarned) { console.error('[webhook] IG_APP_SECRET is not set — rejecting unsigned Instagram webhooks. Set it (Meta app → Settings → Basic → App Secret).'); _igUnsignedWarned = true; }
+      return false;
+    }
+    return true;
+  }
   const header = String(req.headers['x-hub-signature-256'] || '');
   const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(req.rawBody || Buffer.alloc(0)).digest('hex');
   try {
@@ -1652,8 +1762,14 @@ app.post('/webhook/instagram', async (req, res) => {
       // Persist text + attachments (images inline; voice notes downloaded + transcribed).
       await ingestMessage(conv, ev);
       if (ev.direction === 'out') {
-        // Owner replied from the IG app → reset the guardrail, don't run the AI turn.
-        db.prepare('UPDATE conversations SET consecutive_ai_sends = 0 WHERE id = ?').run(conv.id);
+        if ((inFlightSends.get(String(ev.leadId)) || 0) > Date.now()) {
+          // Echo of OUR OWN in-flight AI send that beat the Send API response:
+          // correct its source and leave the autopilot counter alone.
+          if (ev.mid) db.prepare("UPDATE messages SET source = 'ai' WHERE mid = ? AND source = 'human'").run(ev.mid);
+        } else {
+          // Owner replied from the IG app → reset the guardrail, don't run the AI turn.
+          db.prepare('UPDATE conversations SET consecutive_ai_sends = 0 WHERE id = ?').run(conv.id);
+        }
       } else {
         onLeadMessage(conv.id);
         await maybeFireVoiceNote(conv, ev.text); // Audio Arsenal: the LEAD's keyword can fire a voice note too
@@ -1676,13 +1792,15 @@ let _calendlyUnsignedLogged = false;
 function verifyCalendlySignature(req) {
   const key = getSetting('calendly_signing_key') || '';
   if (!key) {
-    if (!_calendlyUnsignedLogged) { console.warn('[calendly] no signing key stored — accepting webhooks unverified (run webhook-setup to secure)'); _calendlyUnsignedLogged = true; }
-    return true;
+    if (!_calendlyUnsignedLogged) { console.warn('[calendly] no signing key stored — REJECTING webhooks (run "Connect booking sync" in Settings to subscribe with a signing key)'); _calendlyUnsignedLogged = true; }
+    return false;
   }
   const header = String(req.headers['calendly-webhook-signature'] || '');
   const parts = Object.fromEntries(header.split(',').map((p) => { const i = p.indexOf('='); return [p.slice(0, i).trim(), p.slice(i + 1).trim()]; }));
   const ts = parts.t, v1 = parts.v1;
   if (!ts || !v1) return false;
+  // Replay guard: the signed timestamp must be within 5 minutes of now.
+  if (!/^\d+$/.test(ts) || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
   const signed = `${ts}.${(req.rawBody || Buffer.alloc(0)).toString('utf8')}`;
   const expected = crypto.createHmac('sha256', key).update(signed).digest('hex');
   try {

@@ -1432,6 +1432,7 @@ $('#logout-btn').addEventListener('click', logout);
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: 'grid' },
   { id: 'messages', label: 'Messages', icon: 'chat' },
+  { id: 'drafts', label: 'Drafts', icon: 'inbox', badge: true },
   { id: 'prompt', label: 'Prompt', icon: 'filetext' },
   { id: 'content', label: 'Content', icon: 'bulb', pill: 'NEW' },
   { id: 'settings', label: 'Settings', icon: 'gear' },
@@ -1447,6 +1448,11 @@ function renderNav() {
   $('#nav').querySelectorAll('[data-route]').forEach((b) => b.addEventListener('click', () => go(b.dataset.route)));
 }
 function go(route) {
+  if (route !== state.route) {
+    if (state.route === 'prompt' && state.scriptDirty && !confirm('You have unsaved changes to your AI Script. Leave without saving?')) return;
+    if (state.route === 'settings' && state.settingsDirty && !confirm('You have unsaved Settings changes. Leave without saving?')) return;
+    state.scriptDirty = false; state.settingsDirty = false;
+  }
   state.route = route;
   ['dashboard', 'messages', 'drafts', 'prompt', 'content', 'settings'].forEach((r) => {
     $('#view-' + r).classList.toggle('hidden', r !== route);
@@ -1708,7 +1714,12 @@ function messagesScaffold() {
     '</div>' +
     '<div class="pane-thread" id="pane-thread"></div>' +
     '<div class="pane-info" id="pane-info"><div class="info-empty">No prospect selected</div></div>';
-  $('#conv-search').addEventListener('input', (e) => { state.search = e.target.value; loadConvs(); });
+  let searchTimer = null;
+  $('#conv-search').addEventListener('input', (e) => {
+    state.search = e.target.value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(loadConvs, 250); // debounce: one request per pause, not per keystroke
+  });
   renderChips();
 }
 function renderChips() {
@@ -1759,12 +1770,15 @@ async function toggleSpawnPop() {
     } catch (e) { toast(e.message, 'err'); }
   }));
 }
+let _convSeq = 0;
 async function loadConvs() {
   const params = new URLSearchParams();
   if (state.filterStage) params.set('stage', state.filterStage);
   if (state.search) params.set('q', state.search);
   let rows;
+  const seq = ++_convSeq;
   try { rows = await api('/api/conversations' + (params.toString() ? '?' + params : '')); } catch (e) { return; }
+  if (seq !== _convSeq) return; // a newer request is in flight — drop this stale response
   if (state.filterFlagged) rows = rows.filter((r) => r.needs_human);
   if (state.filterMode === 'on') rows = rows.filter((r) => r.mode === 'autopilot');
   if (state.filterMode === 'off') rows = rows.filter((r) => r.mode !== 'autopilot');
@@ -1894,7 +1908,13 @@ function renderThread() {
   const structureStale = pane.dataset.key !== key;
 
   if (structureStale) {
+    // Preserve what the owner is typing: the pane is rebuilt when a draft lands
+    // or a flag changes, which used to wipe the composer mid-sentence.
+    const keepComposer = (pane.querySelector('#composer-input') || {}).value || '';
+    const sameDraft = t.pending_draft && pane.dataset.draftId === String(t.pending_draft.id);
+    const keepDraft = sameDraft ? [...pane.querySelectorAll('#draft-zone textarea')].map((x) => x.value) : null;
     pane.dataset.key = key;
+    pane.dataset.draftId = t.pending_draft ? String(t.pending_draft.id) : '';
     pane.innerHTML =
       '<div class="thread-head"><button class="mobile-back" id="mobile-back" aria-label="Back to conversations">&larr;</button>' + avatarHtml(c.handle, c.display_name, 36) +
       '<div class="thread-title">' + esc(c.display_name || c.handle) + '</div>' +
@@ -1916,6 +1936,8 @@ function renderThread() {
       '</div></div></div>';
     wireThread();
     renderDraftZone();
+    if (keepComposer) { const ci = $('#composer-input'); if (ci) ci.value = keepComposer; }
+    if (keepDraft) pane.querySelectorAll('#draft-zone textarea').forEach((x, i) => { if (keepDraft[i] != null) x.value = keepDraft[i]; });
   } else {
     const badge = pane.querySelector('.thread-head .stage-badge');
     if (badge) badge.outerHTML = stageBadge(c.stage);
@@ -2539,7 +2561,7 @@ function renderPrompt() {
   initScriptState(s);
   const page = $('#prompt-page');
   page.innerHTML = '<div class="prompt-grid"><div class="script-workspace">' +
-    '<div class="workspace-head"><h1>AI Script</h1><button class="btn btn-primary is-saved" id="script-save">Saved</button></div>' +
+    '<div class="workspace-head"><h1>AI Script</h1><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-ghost btn-sm" id="script-starter" title="Fill any empty sections from the starter script (nothing you wrote is touched)">Fill empty sections</button><button class="btn btn-primary is-saved" id="script-save">Saved</button></div></div>' +
     '<div class="script-scroll"><div class="script-intro">Everything the AI says comes from what you write here. No script, sequence, pitch or personality is built in.</div>' +
     '<div class="script-col" id="script-col"></div></div></div>' +
 
@@ -2559,6 +2581,19 @@ function renderPrompt() {
   renderScriptWorkspace();
 
   $('#script-save').addEventListener('click', saveScript);
+  $('#script-starter').addEventListener('click', async () => {
+    syncScriptFromDom();
+    let starter; try { starter = await api('/api/prompt-starter'); } catch (e) { toast(e.message, 'err'); return; }
+    const sections = (starter && starter.sections) || {};
+    let n = 0;
+    for (const [k, v] of Object.entries(sections)) {
+      if (typeof state.script[k] === 'string' && !state.script[k].trim() && String(v || '').trim()) { state.script[k] = String(v); n++; }
+    }
+    if (!n) { toast('Every section already has something in it — nothing changed'); return; }
+    renderScriptWorkspace();
+    markScriptDirty();
+    toast('Filled ' + n + ' empty section' + (n === 1 ? '' : 's') + ' — review, then Save');
+  });
   state.scriptDirty = false;
   const scriptCol = $('#script-col');
   scriptCol.addEventListener('input', markScriptDirty);
@@ -3040,7 +3075,7 @@ function syncSettingsFromDom() {
   const set = (key, v) => { if (v !== undefined) s[key] = v; };
   set('calendar_link', val('set-calendar'));
   set('notify_emails', val('set-notify'));
-  set('calendly_token', val('set-calendly-token'));
+  { const tok = (val('set-calendly-token') || '').trim(); if (tok) s.calendly_token = tok; }
   const bookDms = document.getElementById('set-book-dms');
   if (bookDms) s.book_in_dms = bookDms.checked ? '1' : '0';
   set('response_min', val('set-resp-min'));
@@ -3519,7 +3554,7 @@ function renderSettings() {
     '<div class="card settings-card"><div class="set-field">' +
     '<div class="field-label">' + icon('key', 15) + 'Calendly API Token <span class="info-i">' + icon('info', 14) + '</span></div>' +
     '<p class="set-help top">Optional. When set, the AI can check your Calendly availability when prospects ask about scheduling. Enable <b>Scheduling</b> and <code>users:read</code> under <b>User management</b>. Get your token from <a href="https://calendly.com/integrations/api_webhooks" target="_blank" rel="noopener">Calendly Integrations</a>.</p>' +
-    '<input id="set-calendly-token" class="mono-ph" type="text" placeholder="eyJhbGciOiJIUzI1NiJ9..." value="' + esc(s.calendly_token) + '">' +
+    '<input id="set-calendly-token" class="mono-ph" type="password" autocomplete="off" placeholder="' + (s.calendly_token_set ? 'Token saved — paste a new one to replace it' : 'eyJhbGciOiJIUzI1NiJ9...') + '" value="' + esc(s.calendly_token || '') + '">' +
     '<label class="set-check"><input type="checkbox" id="set-book-dms"' + (s.book_in_dms === '1' ? ' checked' : '') + '><span class="cbx">' + icon('check', 12) + '</span>' +
     '<span class="cbx-label">Book calls in DMs (Calendly API) — collect intake and book without sending the link first</span></label>' +
     '</div></div>' +
@@ -3623,7 +3658,7 @@ function renderSettings() {
   /* ---- Call Booking: connect Calendly webhook sync ---- */
   const hookBtn = $('#set-calendly-hook');
   if (hookBtn) hookBtn.addEventListener('click', async () => {
-    if (!($('#set-calendly-token').value || '').trim()) { toast('Add your Calendly API token first', 'err'); return; }
+    if (!($('#set-calendly-token').value || '').trim() && !(state.settings.settings || {}).calendly_token_set) { toast('Add your Calendly API token first', 'err'); return; }
     const prevText = hookBtn.textContent;
     hookBtn.disabled = true; hookBtn.textContent = 'Connecting…';
     try {
@@ -3671,7 +3706,7 @@ function renderSettings() {
       const out = await api('/api/settings', { method: 'PUT', body: {
         calendar_link: $('#set-calendar').value,
         notify_emails: $('#set-notify').value,
-        calendly_token: $('#set-calendly-token').value,
+        ...(($('#set-calendly-token').value || '').trim() ? { calendly_token: $('#set-calendly-token').value.trim() } : {}),
         book_in_dms: $('#set-book-dms').checked ? '1' : '0',
         response_min: $('#set-resp-min').value,
         response_max: $('#set-resp-max').value,
@@ -3787,10 +3822,17 @@ async function loadSettings() {
   try { state.settings = await api('/api/settings'); renderKillDot(); renderAccount(); } catch (e) { /* ignore */ }
 }
 
+window.addEventListener('beforeunload', (e) => {
+  if (state.scriptDirty || state.settingsDirty) { e.preventDefault(); e.returnValue = ''; }
+});
+
 /* ============================== poll loop ============================== */
 setInterval(() => {
   if (!state.pin || document.hidden || $('#app').classList.contains('hidden')) return;
-  loadSettings();
+  // Never overwrite the settings baseline while the owner is mid-edit on a page
+  // that renders from it — a save from another tab would silently replace his work.
+  const editing = (state.route === 'prompt' && state.scriptDirty) || (state.route === 'settings' && state.settingsDirty);
+  if (!editing) loadSettings();
   refreshBadge();
   if (Date.now() - lastIgStatusAt > 10 * 60 * 1000) loadIgStatus(); // IG Graph call is expensive — refresh the auth-error dot at most every 10 min
   if (state.route === 'dashboard') loadDashboard();
