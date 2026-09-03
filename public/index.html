@@ -2284,9 +2284,21 @@ function initScriptState(s) {
   const kt = safeParse(s.keyword_trigger, {});
   state.script = {
     coach_name: s.coach_name || '',
+    prompt_persona: s.prompt_persona || '',
     about_you: s.about_you || '',
-    style: s.style || '',
+    prompt_offer: s.prompt_offer || '',
     client_results: s.client_results || '',
+    prompt_voice: s.prompt_voice || s.style || '',
+    prompt_qualification: s.prompt_qualification || '',
+    prompt_booking: s.prompt_booking || '',
+    prompt_routing: s.prompt_routing || '',
+    call_slots: s.call_slots || '',
+    guide_link: s.guide_link || '',
+    community_link: s.community_link || '',
+    prompt_objections: s.prompt_objections || '',
+    prompt_followup: s.prompt_followup || '',
+    prompt_hard_rules: s.prompt_hard_rules || '',
+    prompt_custom: s.prompt_custom || '',
     call_booked_vsl: s.call_booked_vsl || '',
     reactions_enabled: s.reactions_enabled === '1',
     objection_handlers: (safeParse(s.objection_handlers, []) || []).map((o) => ({ trigger: o.trigger || '', reply: o.reply || '' })),
@@ -2528,7 +2540,7 @@ function renderPrompt() {
   const page = $('#prompt-page');
   page.innerHTML = '<div class="prompt-grid"><div class="script-workspace">' +
     '<div class="workspace-head"><h1>AI Script</h1><button class="btn btn-primary is-saved" id="script-save">Saved</button></div>' +
-    '<div class="script-scroll"><div class="script-intro">Configure how your AI talks to prospects</div>' +
+    '<div class="script-scroll"><div class="script-intro">Everything the AI says comes from what you write here. No script, sequence, pitch or personality is built in.</div>' +
     '<div class="script-col" id="script-col"></div></div></div>' +
 
     '<div class="preview-panel">' +
@@ -2590,7 +2602,7 @@ function renderScriptWorkspace() {
   // 1. Coach Name (always-open, first-child styling removes chevron)
   const coach = '<div class="card script-card open" data-sec="coach">' +
     '<div class="script-card-head"><div class="sc-titles"><div class="sc-title">Coach Name</div>' +
-    '<div class="sc-sub">AI responds as this person (never reveals it’s an AI)</div></div></div>' +
+    '<div class="sc-sub">The AI texts as this person. Whether it ever mentions being an AI is up to your Hard Rules.</div></div></div>' +
     '<div class="script-card-body"><input data-sk="coach_name" placeholder="Your name" value="' + esc(sc.coach_name) + '"></div></div>';
 
   // 2. Knowledge base (display-only)
@@ -2602,7 +2614,33 @@ function renderScriptWorkspace() {
     '<span class="kb-hint">PDF, .docx, or .txt — up to 50 files, 25MB each</span></div>' +
     '<div class="kb-list" id="kb-list"><div class="kb-empty">No documents yet.</div></div>');
 
-  // 3. Behavior Preferences
+  // 3. Your prompt — every section is optional and written entirely by the owner.
+  const ta = (key, rows, ph) => '<textarea data-sk="' + key + '" rows="' + rows + '" placeholder="' + esc(ph) + '">' + esc(sc[key]) + '</textarea>';
+  const inp = (key, ph) => '<input data-sk="' + key + '" placeholder="' + esc(ph) + '" value="' + esc(sc[key]) + '">';
+  const persona = scriptCard('persona', 'Character & Personality', 'Who the AI is when it texts — attitude, personality, how it treats people', 'wand', ACC.purple,
+    '<div class="field-label">Personality</div>' +
+    ta('prompt_persona', 6, 'Describe the character you want the AI to be. Nothing is built in — write it exactly how you want it to come across.') +
+    '<div class="field-label">About You</div>' +
+    ta('about_you', 4, 'Background the AI can draw on: who you are, what you do, your experience.'));
+  const offer = scriptCard('offer', 'Offer & Social Proof', 'What you sell, who it is for, and the results you want the AI to be able to cite', 'filetext', ACC.blue,
+    '<div class="field-label">Offer & Context</div>' +
+    ta('prompt_offer', 6, 'Your offer, who it serves, how it is delivered, and any context the AI should know.') +
+    '<div class="field-label">Client Results</div>' +
+    ta('client_results', 4, 'Real results only, one per line.') +
+    '<p class="sc-help">The AI can only cite results listed here. How and when it uses them is up to your prompt.</p>');
+  const voice = scriptCard('voice', 'Texting Style', 'Tone, length, punctuation, emoji habits — how your messages should read', 'chats', ACC.green,
+    ta('prompt_voice', 6, 'Describe how you text: tone, message length, casing, punctuation, emoji use, anything to avoid.'));
+  const qual = scriptCard('qual', 'Qualification Sequence', 'How the AI qualifies a lead — your questions, your order, your criteria', 'target', ACC.orange,
+    ta('prompt_qualification', 8, 'Describe how a lead should be qualified: what to ask, in what order, what makes someone qualified or not, and what to do in each case.'));
+  const book = scriptCard('book', 'Booking Sequence', 'How the AI moves a qualified lead to a booked call', 'calendar', ACC.pink,
+    ta('prompt_booking', 8, 'Describe how to bring up the call, what to send, how to confirm it, and how to handle hesitation.'));
+  const routing = scriptCard('routing', 'Routing & Resources', 'Who gets booked, who gets a resource instead, and the links the AI is allowed to send', 'bolt', ACC.indigo,
+    '<div class="field-label">Routing Rules</div>' +
+    ta('prompt_routing', 5, 'Describe who gets booked, who gets sent to a guide or community instead, and when.') +
+    '<div class="field-label">Bookable call slots</div>' + inp('call_slots', 'e.g. Mon–Fri 10am–6pm UK, or leave blank') +
+    '<div class="field-label">Free guide link</div>' + inp('guide_link', 'https://…') +
+    '<div class="field-label">Community link</div>' + inp('community_link', 'https://…') +
+    '<p class="sc-help">The AI only ever has the links and slots listed here. Leave one blank and it does not exist.</p>');
   const objRows = sc.objection_handlers.map((o, i) => {
     const showX = sc.objection_handlers.length > 1;
     return '<div class="obj-row">' +
@@ -2613,23 +2651,25 @@ function renderScriptWorkspace() {
       (showX ? '<button type="button" class="row-x" data-obj-x="' + i + '">' + icon('x', 15) + '</button>' : '') +
       '</div></div>';
   }).join('');
-  const behavior = scriptCard('behavior', 'Behavior Preferences', 'Fine-tune how your AI communicates', 'wand', ACC.purple,
-    '<div class="field-label">About You</div>' +
-    '<textarea data-sk="about_you" rows="4" placeholder="E.g. Former D1 basketball player, 10 years coaching\nSpecialize in mindset and performance\nWorked with pro athletes and busy execs">' + esc(sc.about_you) + '</textarea>' +
-    '<div class="field-label">Style</div>' +
-    '<textarea data-sk="style" rows="4" placeholder="Don’t use emojis\nKeep messages short and casual\nAlways be friendly">' + esc(sc.style) + '</textarea>' +
-    '<div class="field-label">Client Results</div>' +
-    '<textarea data-sk="client_results" rows="4" placeholder="Real results only, one per line — first names\nE.g. Moon lost 14kg in under 2 months\nJD lost 20kg in 10 weeks\nTinashe gained 10kg of muscle">' + esc(sc.client_results) + '</textarea>' +
-    '<p class="sc-help">The AI drops these naturally as social proof — matching a lead’s goal, answering “does it work”, and in the long-game follow-ups. It only ever uses results from this list.</p>' +
-    '<div class="section-toprow" style="margin-top:14px"><div class="field-label">Objection Handlers</div>' +
+  const objections = scriptCard('objections', 'Objection Handling', 'How the AI answers pushback — in your words, or nothing at all', 'alert', ACC.red,
+    '<div class="field-label">Approach</div>' +
+    ta('prompt_objections', 5, 'Describe how to handle objections in general (price, time, "let me think about it", etc.).') +
+    '<div class="section-toprow" style="margin-top:14px"><div class="field-label">Specific handlers</div>' +
     '<button type="button" class="mini-btn add-btn" data-add="obj">' + icon('plus', 14) + 'Add</button></div>' +
     '<div class="obj-list">' + objRows + '</div>');
+  const followup = scriptCard('followup', 'Follow-up Instructions', 'What the AI writes when a lead goes quiet', 'stopwatch', ACC.orange,
+    ta('prompt_followup', 5, 'Describe how the AI should follow up with a lead who stopped replying: angle, tone, what never to say.') +
+    '<p class="sc-help">Used only when the AI writes a follow-up itself — timings live in <b>Settings › AI Controls</b> and are off until you set them. Core Sequences below send your exact messages instead.</p>');
+  const rules = scriptCard('rules', 'Hard Rules', 'Things the AI must never do, no matter what', 'shield', ACC.red,
+    ta('prompt_hard_rules', 5, 'One per line. e.g. never quote a price, never mention being an AI, never give medical advice.'));
+  const custom = scriptCard('custom', 'Custom Instructions', 'Anything else — extra rules, edge cases, your own full prompt', 'spark', ACC.purple,
+    ta('prompt_custom', 6, 'Anything not covered above. You can paste an entire prompt here if you prefer to write it as one piece.'));
 
   // 4. Reaction Criteria
   const ruleRows = sc.reaction_rules.length
-    ? sc.reaction_rules.map((r, i) => '<div class="rule-row"><input data-rule="1" data-ri="' + i + '" placeholder="When they share their fitness goal" value="' + esc(r) + '">' +
+    ? sc.reaction_rules.map((r, i) => '<div class="rule-row"><input data-rule="1" data-ri="' + i + '" placeholder="When they share their goal" value="' + esc(r) + '">' +
         '<button type="button" class="row-x" data-rule-x="' + i + '">' + icon('x', 15) + '</button></div>').join('')
-    : '<div class="sc-help italic">No rules yet. Add criteria like "When they share their fitness goal".</div>';
+    : '<div class="sc-help italic">No rules yet. Add criteria like "When they share their goal".</div>';
   const reaction = scriptCard('reaction', 'Reaction Criteria',
     'Instagram heart reactions only. AI hearts prospect messages when your criteria match and it sends a reply.',
     'heart', ACC.pink,
@@ -2695,12 +2735,12 @@ function renderScriptWorkspace() {
     '<div class="delay-row"><input type="number" min="0" data-kt="delay_min" placeholder="Min" value="' + esc(kt.delay_min) + '"><span class="to-word">to</span>' +
     '<input type="number" min="0" data-kt="delay_max" placeholder="Max" value="' + esc(kt.delay_max) + '"><select><option>seconds</option></select></div></div>' +
     '<div class="kw-subhead">Initial Message</div>' +
-    '<textarea class="mono" data-kt="initial_message" rows="4" placeholder="e.g., Awesome, it is great to see you are making fitness a priority. I just have a couple questions to see if I can help you, then we can move forward. Sound good?">' + esc(kt.initial_message) + '</textarea>' +
+    '<textarea class="mono" data-kt="initial_message" rows="4" placeholder="The exact first message to send when a lead DMs your keyword.">' + esc(kt.initial_message) + '</textarea>' +
     '<div class="sc-help">' + icon('bolt', 12) + ' This exact message is sent when triggered (not AI-generated)</div>' +
     '<div class="section-toprow" style="margin-top:16px"><div class="kw-subhead" style="margin:0"><span class="sh-ic">' + icon('chats', 14) + '</span>Follow-ups</div>' +
     '<button type="button" class="mini-btn add-btn" data-add="fup-kw">' + icon('plus', 14) + 'Add</button></div>' +
     fupListHtml('kw') +
-    '<div class="kw-callout flow"><span class="co-ic">' + icon('bolt', 15) + '</span><div class="co-body">After this message, the conversation flows into <b>Qualification → Booking → Call Booked</b> sequences</div></div>';
+    '<div class="kw-callout flow"><span class="co-ic">' + icon('bolt', 15) + '</span><div class="co-body">After this message, the AI follows <b>your prompt sections above</b> and any Core Sequence follow-ups you set below</div></div>';
   const keyword = '<div class="kw-toplabel"><span class="kw-dot"></span>Story/Reel Keyword Trigger</div>' +
     scriptCard('keyword', 'Keyword Trigger',
       'Triggered when prospect responds with your keyword (e.g., FIT, COACH) • Mode: Not configured',
@@ -2740,12 +2780,12 @@ function renderScriptWorkspace() {
     (vslHasPlaceholder ? '<div class="pv-note" style="padding:6px 0 0">' + icon('alert', 13) + '<span>Replace [VSL LINK] with your real video link — the auto-send skips while the placeholder is present.</span></div>' : '') +
     '</div></div>';
   const coreSeq = '<div class="core-seq-wrap"><div class="core-seq-head">Core Sequences</div>' +
-    seq('seqlead', 'seq_lead', 'Lead Sequence', 'Add follow-ups to the proven lead script') +
-    seq('seqqual', 'seq_qualification', 'Qualification Sequence', 'Add follow-ups to the proven qualification script') +
-    seq('seqbook', 'seq_booking', 'Booking Sequence', 'Add follow-ups to the proven booking script') +
+    seq('seqlead', 'seq_lead', 'Lead Sequence', 'Your exact follow-ups for leads who go quiet before qualifying (empty = none)') +
+    seq('seqqual', 'seq_qualification', 'Qualification Sequence', 'Your exact follow-ups for leads who go quiet while qualifying (empty = none)') +
+    seq('seqbook', 'seq_booking', 'Booking Sequence', 'Your exact follow-ups for leads who go quiet after a booking is proposed (empty = none)') +
     callBooked + '</div>';
 
-  col.innerHTML = coach + kb + behavior + reaction + audioArsenal + manualVoice + keyword + aiOn + coreSeq;
+  col.innerHTML = coach + persona + offer + voice + qual + book + routing + objections + followup + rules + custom + kb + reaction + audioArsenal + manualVoice + keyword + aiOn + coreSeq;
   bindScriptEvents(col);
 }
 
@@ -3020,6 +3060,8 @@ function syncSettingsFromDom() {
   s.flag_enabled = JSON.stringify(flagEnabledOut);
   const defaultMode = val('default-mode');
   set('default_mode', defaultMode);
+  const stripD = checked('set-strip-dashes');
+  if (stripD !== undefined) s.strip_dashes = stripD ? '1' : '0';
   set('followup_1_hours', val('fu1'));
   set('followup_2_hours', val('fu2'));
   set('followup_3_hours', val('fu3'));
@@ -3046,9 +3088,21 @@ async function saveScript(e) {
   }).filter((f) => f.kind === 'audio' ? !!f.audio_id : !!f.message);
   const body = {
     coach_name: sc.coach_name,
+    prompt_persona: sc.prompt_persona,
     about_you: sc.about_you,
-    style: sc.style,
+    prompt_offer: sc.prompt_offer,
     client_results: sc.client_results,
+    prompt_voice: sc.prompt_voice,
+    prompt_qualification: sc.prompt_qualification,
+    prompt_booking: sc.prompt_booking,
+    prompt_routing: sc.prompt_routing,
+    call_slots: sc.call_slots,
+    guide_link: sc.guide_link,
+    community_link: sc.community_link,
+    prompt_objections: sc.prompt_objections,
+    prompt_followup: sc.prompt_followup,
+    prompt_hard_rules: sc.prompt_hard_rules,
+    prompt_custom: sc.prompt_custom,
     call_booked_vsl: sc.call_booked_vsl,
     reactions_enabled: sc.reactions_enabled ? '1' : '0',
     objection_handlers: JSON.stringify(sc.objection_handlers.filter((o) => o.trigger.trim() || o.reply.trim())),
@@ -3537,13 +3591,15 @@ function renderSettings() {
     switchHtml(s.kill_switch === '1', 'sw-red', 'id="kill-switch"') + '</div>' +
     '<div class="set-row"><div><div class="sr-label">Default mode for new leads</div><div class="sr-sub">Applied when a conversation is created</div></div>' +
     '<select id="default-mode">' + modeOpts + '</select></div>' +
-    '<div class="set-row"><div><div class="sr-label">First follow-up (hours)</div><div class="sr-sub">Short nudge, hours after silence</div></div>' +
-    '<input id="fu1" type="number" min="1" value="' + esc(s.followup_1_hours) + '"></div>' +
-    '<div class="set-row"><div><div class="sr-label">Second follow-up (hours)</div><div class="sr-sub">Value-carrying message, hours after the first</div></div>' +
-    '<input id="fu2" type="number" min="1" value="' + esc(s.followup_2_hours) + '"></div>' +
-    '<div class="set-row"><div><div class="sr-label">Third follow-up (hours)</div><div class="sr-sub">Long-game re-open, hours after the second (48 = 2 days) — uses Client Results for social proof. Blank/0 to disable.</div></div>' +
+    '<div class="set-row"><div><div class="sr-label">Strip dashes from outbound messages</div><div class="sr-sub">Off by default. When on, em/en dashes and spaced hyphens in every outbound message become commas.</div></div>' +
+    switchHtml(s.strip_dashes === '1', '', 'id="set-strip-dashes"') + '</div>' +
+    '<div class="set-row"><div><div class="sr-label">AI follow-up #1 (hours)</div><div class="sr-sub">Hours of silence before the AI writes a follow-up from your Follow-up Instructions (AI Script). Blank/0 = no AI follow-ups.</div></div>' +
+    '<input id="fu1" type="number" min="0" value="' + esc(s.followup_1_hours || '') + '"></div>' +
+    '<div class="set-row"><div><div class="sr-label">AI follow-up #2 (hours)</div><div class="sr-sub">Hours after the first. Blank/0 to stop after #1.</div></div>' +
+    '<input id="fu2" type="number" min="0" value="' + esc(s.followup_2_hours || '') + '"></div>' +
+    '<div class="set-row"><div><div class="sr-label">AI follow-up #3 (hours)</div><div class="sr-sub">Hours after the second. Blank/0 to disable.</div></div>' +
     '<input id="fu3" type="number" min="0" value="' + esc(s.followup_3_hours || '') + '"></div>' +
-    '<div class="set-row"><div><div class="sr-label">Fourth follow-up (hours)</div><div class="sr-sub">Final re-open, hours after the third (96 = 4 days). Blank/0 to disable.</div></div>' +
+    '<div class="set-row"><div><div class="sr-label">AI follow-up #4 (hours)</div><div class="sr-sub">Hours after the third. Blank/0 to disable.</div></div>' +
     '<input id="fu4" type="number" min="0" value="' + esc(s.followup_4_hours || '') + '"></div>' +
     '<div class="set-field" style="margin-top:16px"><div class="field-label">Outbound filter</div>' +
     '<textarea id="set-outbound" class="mono-ph" placeholder="[£$€]\\s*\\d" style="font-family:\'SF Mono\',ui-monospace,monospace;font-size:12.5px">' + esc(outboundText) + '</textarea>' +
@@ -3628,6 +3684,7 @@ function renderSettings() {
         flag_enabled: JSON.stringify(flagEnabledOut),
         kill_switch: $('#kill-switch').querySelector('input').checked ? '1' : '0',
         default_mode: $('#default-mode').value,
+        strip_dashes: $('#set-strip-dashes').querySelector('input').checked ? '1' : '0',
         followup_1_hours: $('#fu1').value,
         followup_2_hours: $('#fu2').value,
         followup_3_hours: $('#fu3').value,

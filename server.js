@@ -125,42 +125,47 @@ try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_mid ON messages(mid) WH
 
 // ---------- settings ----------
 const SETTING_DEFAULTS = {
-  // Five editable prompt sections. NEUTRAL placeholders only — the owner pastes
-  // his own business context; no doctrine is baked in code. Phase 2's engine
-  // composes the system prompt from these at runtime.
-  prompt_offer: 'Describe your offer, who it serves, and your positioning.',
-  prompt_qualification: 'Describe how a lead should be qualified, step by step.',
-  prompt_routing: 'Describe routing rules: who gets booked, who gets sent to community/guide, links to use.',
-  prompt_voice: 'Describe how you text: tone, length, punctuation, emoji habits.',
-  prompt_hard_rules: 'List things the AI must NEVER do, one per line.',
+  // The owner-written prompt sections. ALL EMPTY by default — nothing about
+  // how to sell, qualify, book, follow up, or talk is baked into the product.
+  // lib/engine.js composes the system prompt from whatever the owner writes.
+  prompt_persona: '',               // Character & Personality
+  prompt_offer: '',                 // Offer & Context
+  prompt_voice: '',                 // Texting Style (legacy `style` honored as a fallback)
+  prompt_qualification: '',         // Qualification Sequence
+  prompt_booking: '',               // Booking Sequence
+  prompt_routing: '',               // Routing Rules
+  prompt_objections: '',            // Objection Handling (free text)
+  prompt_followup: '',              // Follow-up Instructions (AI-written follow-ups)
+  prompt_hard_rules: '',            // Hard Rules
+  prompt_custom: '',                // Custom Instructions
   coach_name: '',
   default_mode: 'off',              // AI is opt-in per thread: handoff phrase (owner) or keyword (lead)
   kill_switch: '0',
-  followup_1_hours: '4',
-  followup_2_hours: '23',
-  // Long-game re-opens (days later, counted from the previous follow-up). Blank
-  // or 0 disables that step and every step after it. NOTE: these usually fall
-  // outside Instagram's 24h window — the AI still composes the message with full
-  // conversation context, but it parks as a manual draft + notification for the
+  // AI follow-up ladder (hours of silence before the AI writes follow-up #1,
+  // then hours after the previous one for #2-#4). ALL OFF by default — the
+  // owner opts in by entering timings, and the content comes from his own
+  // Follow-up Instructions. Blank/0 disables that step and every step after it.
+  // NOTE: later steps usually fall outside Instagram's 24h window — the AI still
+  // composes the message, but it parks as a manual draft + notification for the
   // owner to send from his phone (Meta policy, not ours).
-  followup_3_hours: '48',
-  followup_4_hours: '96',
+  followup_1_hours: '',
+  followup_2_hours: '',
+  followup_3_hours: '',
+  followup_4_hours: '',
   call_slots: '',
   guide_link: '',
   community_link: '',
   // Universal outbound guardrail (regex source strings, JSON array). Default is
-  // EMPTY: the old currency tripwire ([£$€] next to digits) blocked the intended
-  // affordability gate ("could you invest between £250–£500 a month?") and killed
-  // autopilot at peak intent. The baked "never state your actual program price"
-  // prompt rule already prevents price-quoting; owners can add their own regexes.
+  // EMPTY — owners add their own tripwires (e.g. [£$€]\s*\d to block prices).
   outbound_filter_regexes: JSON.stringify([]),
+  // Opt-in punctuation cleanup: '1' turns em/en dashes (and spaced hyphens) in
+  // every outbound message into commas. Off by default — no style is enforced.
+  strip_dashes: '0',
 
   // ---- AI Script (SetDM-parity) ----
-  // The setter METHODOLOGY (6-stage flow, voice rules, objection taxonomy) is
-  // baked into engine.js. These are the owner-editable fields layered on top.
-  about_you: '',                    // Behavior Preferences › About You
-  style: '',                        // Behavior Preferences › Style
-  client_results: '',               // real client results, one per line — social proof the AI may reference (never invents)
+  about_you: '',                    // About You (identity)
+  style: '',                        // LEGACY — migrated into prompt_voice on boot; no longer edited in the UI
+  client_results: '',               // real client results, one per line — the AI may cite only these
   objection_handlers: '[]',         // [{trigger, reply}]
   reactions_enabled: '0',           // Reaction Criteria master toggle
   reaction_rules: '[]',             // ["When they share their fitness goal", …]
@@ -176,12 +181,11 @@ const SETTING_DEFAULTS = {
   // ---- Booking loop (Calendly) ----
   // Pre-call reminders fired off the booked call_time (interpolate {{FIRST_NAME}}
   // + {{CALENDLY}}). Each { hours_before, message }; sent once per conversation.
-  booking_reminders: JSON.stringify([
-    { hours_before: 24, message: "hey {{FIRST_NAME}}, we're locked in for tomorrow — see you on the call 🤝" },
-    { hours_before: 1, message: "call in about an hour — got your typical day of eating ready?" },
-  ]),
-  // Sent ~30 min after a no-show (no lead message since the call start).
-  noshow_message: 'hey, looks like we missed each other — no stress. grab a new time here: {{CALENDLY}}',
+  // EMPTY by default — the owner writes his own.
+  booking_reminders: JSON.stringify([]),
+  // Sent ~30 min after a no-show (no lead message since the call start). EMPTY
+  // by default — nothing is sent unless the owner writes a message.
+  noshow_message: '',
 
   // ---- Settings (SetDM-parity) ----
   calendar_link: '',                // Calendly booking URL
@@ -209,8 +213,38 @@ const setSetting = (k, v) => db.prepare('INSERT OR REPLACE INTO settings (key, v
 for (const [k, v] of Object.entries(SETTING_DEFAULTS)) {
   if (getSetting(k) == null) setSetting(k, v);
 }
+// One-time cleanup of the defaults that USED to ship baked in (placeholder
+// prompt text, the 4/23/48/96h follow-up ladder, canned reminders / no-show
+// copy). A stored value that still equals the old built-in default was never
+// the owner's choice, so it is cleared; anything the owner edited is untouched.
+const LEGACY_BAKED_DEFAULTS = {
+  prompt_offer: ['Describe your offer, who it serves, and your positioning.', ''],
+  prompt_qualification: ['Describe how a lead should be qualified, step by step.', ''],
+  prompt_routing: ['Describe routing rules: who gets booked, who gets sent to community/guide, links to use.', ''],
+  prompt_voice: ['Describe how you text: tone, length, punctuation, emoji habits.', ''],
+  prompt_hard_rules: ['List things the AI must NEVER do, one per line.', ''],
+  followup_1_hours: ['4', ''],
+  followup_2_hours: ['23', ''],
+  followup_3_hours: ['48', ''],
+  followup_4_hours: ['96', ''],
+  booking_reminders: [JSON.stringify([
+    { hours_before: 24, message: "hey {{FIRST_NAME}}, we're locked in for tomorrow — see you on the call 🤝" },
+    { hours_before: 1, message: "call in about an hour — got your typical day of eating ready?" },
+  ]), '[]'],
+  noshow_message: ['hey, looks like we missed each other — no stress. grab a new time here: {{CALENDLY}}', ''],
+};
+for (const [k, [legacy, blank]] of Object.entries(LEGACY_BAKED_DEFAULTS)) {
+  if (getSetting(k) === legacy) { setSetting(k, blank); console.log(`[settings] cleared legacy built-in default for ${k}`); }
+}
+// The old "Style" box lives on as Texting Style — carry its text over once.
+if (!String(getSetting('prompt_voice') || '').trim() && String(getSetting('style') || '').trim()) {
+  setSetting('prompt_voice', getSetting('style'));
+  console.log('[settings] migrated legacy style → prompt_voice');
+}
 const allSettings = () =>
   Object.fromEntries(Object.keys(SETTING_DEFAULTS).map((k) => [k, getSetting(k)]));
+// Outbound punctuation cleanup is OPT-IN (Settings › AI Controls › Strip dashes).
+const cleanOutbound = (t) => (getSetting('strip_dashes') === '1' ? stripDashes(t) : String(t ?? ''));
 
 // Settings PLUS injected knowledge-base text + Calendly availability — used only
 // for engine calls so the frontend settings blob (allSettings) stays lean.
@@ -467,9 +501,9 @@ const TEST_MARKER_RE = /dmsetter\s*test|just testing|\btest \d+\/\d+\b/i;
 
 async function deliver(conv, text, source) {
   let sentMid = null;
-  // Universal guardrail: strip em/en dashes (an AI tell) before anything else, so
-  // every downstream path (dedupe, IG send, DB store) sees the sanitized text.
-  text = stripDashes(text);
+  // Optional owner-enabled dash cleanup, applied before anything else so every
+  // downstream path (dedupe, IG send, DB store) sees the same text.
+  text = cleanOutbound(text);
   const filtered = applyOutboundFilter(text, parseJ(getSetting('outbound_filter_regexes'), []));
   if (!filtered.ok) {
     db.prepare('UPDATE conversations SET needs_human = 1, needs_human_reason = ? WHERE id = ?')
@@ -1127,7 +1161,7 @@ app.post('/api/conversations/:id/request-draft', requireAdmin, async (req, res) 
   try {
     const move = await generateMove(engineSettings(), conv, historyOf(conv.id));
     const messages = Array.isArray(move?.messages) && move.messages.length
-      ? move.messages.slice(0, 2).map((m) => stripDashes(String(m))) : [''];
+      ? move.messages.slice(0, 2).map((m) => cleanOutbound(String(m))) : [''];
     const draft = storeDraft(conv.id, messages, move?.stage, move?.needs_human, move?.reason);
     res.json({ ...draft, messages: parseJ(draft.messages_json, []), needs_human: !!draft.needs_human });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1151,7 +1185,7 @@ app.post('/api/preview', requireAdmin, async (req, res) => {
     const move = await generateMove(engineSettings(), { handle: 'preview_lead', stage }, history);
     const regexes = parseJ(getSetting('outbound_filter_regexes'), []);
     const messages = (move.messages || []).map((raw) => {
-      const text = stripDashes(String(raw));
+      const text = cleanOutbound(String(raw));
       return { text, blocked: !applyOutboundFilter(text, regexes).ok };
     });
     res.json({ messages, stage: move.stage, needs_human: move.needs_human, reason: move.reason });
