@@ -1702,13 +1702,12 @@ let _igUnsignedWarned = false;
 function verifyWebhookSignature(req) {
   const secret = process.env.IG_APP_SECRET;
   if (!secret) {
-    // Instagram is live but the app secret isn't set: REJECT rather than accept
-    // forged events (which could make the bot DM arbitrary accounts). Only
-    // pre-setup (no page token yet) passes through so the handshake isn't blocked.
-    if (igConfigured()) {
-      if (!_igUnsignedWarned) { console.error('[webhook] IG_APP_SECRET is not set — rejecting unsigned Instagram webhooks. Set it (Meta app → Settings → Basic → App Secret).'); _igUnsignedWarned = true; }
-      return false;
-    }
+    // No app secret yet: the owner chose (2026-09-04) to keep DMs flowing rather
+    // than reject unverified events, so accept them and warn — in the server log
+    // and with a red notice on the Settings › Instagram card (signature_verified
+    // = false). Until IG_APP_SECRET is set, anyone who finds the webhook URL could
+    // forge lead messages. Verification enforces itself the moment it is set.
+    if (igConfigured() && !_igUnsignedWarned) { console.error('[webhook] IG_APP_SECRET is not set — accepting UNVERIFIED Instagram webhooks. Add it on Railway (Meta app → Settings → Basic → App Secret) to enforce signatures.'); _igUnsignedWarned = true; }
     return true;
   }
   const header = String(req.headers['x-hub-signature-256'] || '');
@@ -1793,8 +1792,10 @@ let _calendlyUnsignedLogged = false;
 function verifyCalendlySignature(req) {
   const key = getSetting('calendly_signing_key') || '';
   if (!key) {
-    if (!_calendlyUnsignedLogged) { console.warn('[calendly] no signing key stored — REJECTING webhooks (run "Connect booking sync" in Settings to subscribe with a signing key)'); _calendlyUnsignedLogged = true; }
-    return false;
+    // Same stance as Instagram: accept but warn until "Connect booking sync"
+    // stores a signing key, so an existing Calendly subscription keeps working.
+    if (!_calendlyUnsignedLogged) { console.warn('[calendly] no signing key stored — accepting UNVERIFIED webhooks (run "Connect booking sync" in Settings to subscribe with a signing key)'); _calendlyUnsignedLogged = true; }
+    return true;
   }
   const header = String(req.headers['calendly-webhook-signature'] || '');
   const parts = Object.fromEntries(header.split(',').map((p) => { const i = p.indexOf('='); return [p.slice(0, i).trim(), p.slice(i + 1).trim()]; }));

@@ -3425,10 +3425,10 @@ function igSectionHtml(st) {
     '<span>Instagram disconnected — the access token was rejected (expired or revoked). Reconnect by generating a fresh token in your Meta app and updating IG_PAGE_TOKEN.' +
     (st.auth_error.detail ? '<span class="ig-auth-detail">' + esc(st.auth_error.detail) + '</span>' : '') +
     '</span></div>' : '';
-  // Webhook signatures are REQUIRED once Instagram is configured: without
-  // IG_APP_SECRET every incoming event is rejected, so no DMs arrive.
+  // Without IG_APP_SECRET the server cannot verify who sent a webhook: it
+  // accepts them so DMs keep flowing, but anyone with the URL could forge one.
   const secretAlert = st && st.configured && st.signature_verified === false ? '<div class="ig-auth-alert">' + icon('alert', 17) +
-    '<span><b>IG_APP_SECRET is not set, so Instagram messages are being rejected.</b> In your Meta app go to Settings → Basic, copy the App Secret, and add it on Railway as a new variable named <span class="mono">IG_APP_SECRET</span>. The server verifies every webhook against it.</span></div>' : '';
+    '<span><b>Instagram webhooks are not being verified.</b> Add <span class="mono">IG_APP_SECRET</span> on Railway (Meta app → Settings → Basic → App Secret, then "+ New Variable") so forged lead messages are rejected. Until then anyone who finds the webhook URL could make the AI reply.</span></div>' : '';
   return '<div class="set-sub">' +
     '<div class="set-sub-head"><span class="icon-chip" style="' + IG_GRAD + '">' + icon('instagram', 15) + '</span>' +
     '<div class="sc-title-sub"><span class="st">Instagram Account</span><span class="sc-s">Connect to enable AI DM automation</span></div></div>' +
