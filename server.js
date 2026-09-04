@@ -894,6 +894,7 @@ app.get('/api/instagram/status', requireAdmin, async (req, res) => {
   // FEATURE 2: surface a dead/revoked token to the UI. Read AFTER igStatus so a
   // just-healed token (igStatus cleared it) reports null immediately.
   st.auth_error = parseJ(getSetting('ig_auth_error') || '', null);
+  st.signature_verified = !!process.env.IG_APP_SECRET; // false → Settings shows the IG_APP_SECRET notice (webhooks are rejected until it is set)
   res.json(st);
 });
 
