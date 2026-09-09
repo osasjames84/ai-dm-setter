@@ -308,6 +308,21 @@ if (getSetting('_min_age_16_v1') == null) {
   setSetting('_min_age_16_v1', '1');
   if (n) console.log(`[migrate] minimum age → 16 in ${n} place(s)`);
 }
+// One-shot (2026-09-09): regional affordability amounts (owner's call). Swaps
+// the exact seeded phrases and appends the REGIONAL AFFORDABILITY block to the
+// live Routing Rules. Sections the owner rewrote are left as they are.
+if (getSetting('_regional_pricing_v1') == null) {
+  const R = [["prompt_routing", "ask once, kindly, whether they could put between £200 and £300 a month towards it.", "ask once, kindly, whether they could put the affordability amount for where they live towards it (REGIONAL AFFORDABILITY below)."], ["prompt_objections", "The one range I am happy to mention is the £200 to £300 a month affordability question from the Routing Rules, and only as a question about them, never as my price.", "The one number I am happy to mention is the affordability question from the Routing Rules, at the amount for where they live (REGIONAL AFFORDABILITY there), and only as a question about them, never as my price."], ["prompt_hard_rules", "The only number you may ever mention is the £200 to £300 a month affordability question, and only as a question.", "The only number you may ever mention is the affordability amount for the lead's country from the Routing Rules, and only as a question."]];
+  let n = 0;
+  for (const [k, a, b] of R) {
+    const v = String(getSetting(k) || '');
+    if (v.includes(a)) { setSetting(k, v.split(a).join(b)); n++; }
+  }
+  const routing = String(getSetting('prompt_routing') || '');
+  if (routing && !routing.includes('REGIONAL AFFORDABILITY')) { setSetting('prompt_routing', routing + "\n\nREGIONAL AFFORDABILITY (go by the lead's own answer to \"where are you from\" in question 1, never a guess from their name, accent or slang)\n- UK: £200 to £300 a month.\n- USA, Canada, Australia, New Zealand, Western Europe, the Gulf: the equivalent of £200 to £300 a month in their currency, rounded to a clean number (for example $250 to $400 in the US).\n- Nigeria: ₦200,000 a month.\n- Any other African country, India, Pakistan, Bangladesh, Sri Lanka, Nepal, the Philippines, Indonesia, Vietnam, most of Latin America, or any country with similar incomes: the rough equivalent of ₦200,000 a month in their local currency, rounded to a clean number (roughly £100 a month).\n- Not sure which bracket a country is in: use the lower one.\nAlways ask it as a question about them, never as my price."); n++; }
+  setSetting('_regional_pricing_v1', '1');
+  if (n) console.log(`[migrate] regional affordability applied in ${n} place(s)`);
+}
 const allSettings = () => {
   const raw = allSettingsRaw();
   const s = { ...raw };
