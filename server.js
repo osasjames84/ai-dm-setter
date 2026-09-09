@@ -323,6 +323,24 @@ if (getSetting('_regional_pricing_v1') == null) {
   setSetting('_regional_pricing_v1', '1');
   if (n) console.log(`[migrate] regional affordability applied in ${n} place(s)`);
 }
+// Second pass for the regional wording: looser matches (a whole sentence
+// rather than the exact seeded string), logged per section, so nothing in the
+// live prompt still pins the affordability question to pounds.
+if (getSetting('_regional_pricing_v2') == null) {
+  const passes = [
+    ['prompt_hard_rules', /The only number you may ever mention is[^.]*\./, "The only number you may ever mention is the affordability amount for the lead's country from the Routing Rules, and only as a question."],
+    ['prompt_objections', /The one (?:range|number) I am happy to mention is[^.]*\./, 'The one number I am happy to mention is the affordability question from the Routing Rules, at the amount for where they live (REGIONAL AFFORDABILITY there), and only as a question about them, never as my price.'],
+    ['prompt_routing', /whether they could put between £[0-9,]+ and £[0-9,]+ a month towards it\./, 'whether they could put the affordability amount for where they live towards it (REGIONAL AFFORDABILITY below).'],
+  ];
+  const touched = [];
+  for (const [k, re, b] of passes) {
+    const v = String(getSetting(k) || '');
+    const nv = v.replace(re, b);
+    if (nv !== v) { setSetting(k, nv); touched.push(k); }
+  }
+  setSetting('_regional_pricing_v2', '1');
+  console.log('[migrate] regional wording pass 2 touched: ' + (touched.join(', ') || 'nothing (already in place)'));
+}
 const allSettings = () => {
   const raw = allSettingsRaw();
   const s = { ...raw };
