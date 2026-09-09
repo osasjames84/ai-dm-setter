@@ -281,6 +281,19 @@ if (getSetting('_clear_sendfailed_flags_v1') == null) {
   setSetting('_clear_sendfailed_flags_v1', '1');
   if (r.changes) console.log(`[migrate] cleared ${r.changes} "send failed" flag(s), threads back on autopilot`);
 }
+// One-shot (2026-09-09): the affordability range in the seeded script moves
+// from £250-£500 to £200-£300 a month (owner's call). Only the exact seeded
+// phrases are touched, so anything he rewrote himself is left alone.
+if (getSetting('_price_range_200_300_v1') == null) {
+  let n = 0;
+  for (const k of ['prompt_routing', 'prompt_objections', 'prompt_hard_rules', 'prompt_qualification', 'prompt_custom', 'prompt_offer']) {
+    const v = String(getSetting(k) || '');
+    const nv = v.replace(/£250 and £500/g, '£200 and £300').replace(/£250 to £500/g, '£200 to £300');
+    if (nv !== v) { setSetting(k, nv); n++; }
+  }
+  setSetting('_price_range_200_300_v1', '1');
+  if (n) console.log(`[migrate] price range → £200-£300 in ${n} prompt section(s)`);
+}
 const allSettings = () => {
   const raw = allSettingsRaw();
   const s = { ...raw };
