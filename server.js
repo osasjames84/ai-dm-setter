@@ -352,6 +352,29 @@ if (getSetting('_regional_pricing_v3') == null) {
   } else console.log('[migrate] regional affordability block already present');
   setSetting('_regional_pricing_v3', '1');
 }
+// One-shot (2026-09-09): the OLD July script (six-topic ladder + £300-500 gate)
+// was still sitting in About You and in the objection handlers, contradicting
+// the new Qualification Sequence — the AI followed it and jumped to money.
+// About You goes back to identity only (the owner's own words); the old text is
+// logged in full so it can be recovered. Objection handlers keep their
+// meaning but lose the old range.
+if (getSetting('_strip_old_ladder_v1') == null) {
+  const oldAbout = String(getSetting('about_you') || '');
+  if (/300|500|budget|invest|afford|ladder/i.test(oldAbout)) {
+    console.log('[migrate] OLD about_you (saved here for recovery):\n' + oldAbout);
+    setSetting('about_you', "I'm a 1-on-1 fitness coach. I help people lose fat and get shredded. The thing everybody struggles with is the diet — that's where people get stuck. They've been trying for years, doing it over and over, spinning their wheels with nothing to show for it. They're lost with food and they don't know how to eat to actually get lean.\n\nI coach the whole thing: I teach you how to diet properly AND I build and adjust your training. Everyone who works with me gets their training dialled in by me — I don't assume you've got that figured out. Nutrition is the piece most people are missing, but I sort both so you actually get shredded.\n\nWhy me: I've been exactly where they are. I was fat as hell growing up, overfed as a kid. I taught myself nutrition from scratch, figured out how to diet, and got shredded — and I did it coming from an African background where the food we grew up on isn't exactly macro-friendly. So I know how to make it work with real food, for real people.\n\nThe people I help are stuck, frustrated, and lost with dieting. They've tried and failed enough times that they're sick of it. That's who I want on a call.");
+    console.log('[migrate] about_you reset to identity only');
+  }
+  let rows = []; try { rows = JSON.parse(getSetting('objection_handlers') || '[]'); } catch { rows = []; }
+  if (Array.isArray(rows) && rows.length) {
+    const fix = (t) => String(t || '')
+      .replace(/£?\s?(?:300|250)\s?(?:-|–|to|and)\s?£?\s?500(?:\s?(?:a|per)\s?month)?/gi, '£200 to £300 a month (or the local equivalent from REGIONAL AFFORDABILITY in the Routing Rules)');
+    let changed = 0;
+    const out = rows.map((r) => { const nr = { ...r, trigger: fix(r.trigger), reply: fix(r.reply) }; if (nr.trigger !== r.trigger || nr.reply !== r.reply) changed++; return nr; });
+    if (changed) { console.log('[migrate] OLD objection_handlers (saved here for recovery): ' + JSON.stringify(rows)); setSetting('objection_handlers', JSON.stringify(out)); console.log(`[migrate] objection_handlers: ${changed} entr${changed === 1 ? 'y' : 'ies'} updated to the new range`); }
+  }
+  setSetting('_strip_old_ladder_v1', '1');
+}
 const allSettings = () => {
   const raw = allSettingsRaw();
   const s = { ...raw };
