@@ -294,6 +294,20 @@ if (getSetting('_price_range_200_300_v1') == null) {
   setSetting('_price_range_200_300_v1', '1');
   if (n) console.log(`[migrate] price range → £200-£300 in ${n} prompt section(s)`);
 }
+// One-shot (2026-09-09): minimum age 18 → 16 (owner's call). Swaps the exact
+// seeded age phrases in the live prompt sections and the Settings min_age
+// filter when it still holds the old value.
+if (getSetting('_min_age_16_v1') == null) {
+  let n = 0;
+  for (const k of ['prompt_routing', 'prompt_hard_rules', 'prompt_qualification', 'prompt_offer', 'prompt_custom', 'prompt_objections']) {
+    const v = String(getSetting(k) || '');
+    const nv = v.replace(/over 18\b/g, 'over 16').replace(/Under 18\b/g, 'Under 16').replace(/under 18\b/g, 'under 16').replace(/They are 18 or over/g, 'They are 16 or over');
+    if (nv !== v) { setSetting(k, nv); n++; }
+  }
+  if (String(getSetting('min_age') || '').trim() === '18') { setSetting('min_age', '16'); n++; }
+  setSetting('_min_age_16_v1', '1');
+  if (n) console.log(`[migrate] minimum age → 16 in ${n} place(s)`);
+}
 const allSettings = () => {
   const raw = allSettingsRaw();
   const s = { ...raw };
