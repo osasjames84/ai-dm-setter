@@ -341,6 +341,17 @@ if (getSetting('_regional_pricing_v2') == null) {
   setSetting('_regional_pricing_v2', '1');
   console.log('[migrate] regional wording pass 2 touched: ' + (touched.join(', ') || 'nothing (already in place)'));
 }
+// Pass 3: the block itself. Pass 1 skipped the append because the swapped
+// sentence already contained the words "REGIONAL AFFORDABILITY"; check for the
+// block's own heading instead.
+if (getSetting('_regional_pricing_v3') == null) {
+  const routing = String(getSetting('prompt_routing') || '');
+  if (routing && !routing.includes('REGIONAL AFFORDABILITY (go by')) {
+    setSetting('prompt_routing', routing + "\n\nREGIONAL AFFORDABILITY (go by the lead's own answer to \"where are you from\" in question 1, never a guess from their name, accent or slang)\n- UK: £200 to £300 a month.\n- USA, Canada, Australia, New Zealand, Western Europe, the Gulf: the equivalent of £200 to £300 a month in their currency, rounded to a clean number (for example $250 to $400 in the US).\n- Nigeria: ₦200,000 a month.\n- Any other African country, India, Pakistan, Bangladesh, Sri Lanka, Nepal, the Philippines, Indonesia, Vietnam, most of Latin America, or any country with similar incomes: the rough equivalent of ₦200,000 a month in their local currency, rounded to a clean number (roughly £100 a month).\n- Not sure which bracket a country is in: use the lower one.\nAlways ask it as a question about them, never as my price.");
+    console.log('[migrate] regional affordability block appended to Routing Rules');
+  } else console.log('[migrate] regional affordability block already present');
+  setSetting('_regional_pricing_v3', '1');
+}
 const allSettings = () => {
   const raw = allSettingsRaw();
   const s = { ...raw };
