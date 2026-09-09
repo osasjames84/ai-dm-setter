@@ -1810,10 +1810,21 @@ function renderListMeta() {
     $('#bulk-off').addEventListener('click', () => applyBulkMode('copilot'));
     $('#bulk-cancel').addEventListener('click', () => { state.selectMode = false; state.selected = new Set(); renderConvList(); });
   } else {
+    const flaggedView = state.filterFlagged && state.convs.length > 0;
     meta.innerHTML =
       '<span class="count">' + state.convs.length + ' conversation' + (state.convs.length === 1 ? '' : 's') + '</span>' +
-      '<button class="list-select" id="list-select"><span class="select-ring"></span>Select</button>';
+      '<div class="bulk-actions">' +
+      (flaggedView ? '<button class="bulk-btn on" id="handled-all">Mark all handled</button>' : '') +
+      '<button class="list-select" id="list-select"><span class="select-ring"></span>Select</button></div>';
     $('#list-select').addEventListener('click', () => { state.selectMode = true; state.selected = new Set(); renderConvList(); });
+    if (flaggedView) $('#handled-all').addEventListener('click', async () => {
+      if (!confirm('Clear the flag on all ' + state.convs.length + ' flagged conversations?')) return;
+      try {
+        const out = await api('/api/conversations/handled-all', { method: 'POST', body: {} });
+        toast('Marked ' + out.cleared + ' handled');
+        loadConvs(); if (state.activeId) loadThread(state.activeId);
+      } catch (e) { toast(e.message, 'err'); }
+    });
   }
 }
 

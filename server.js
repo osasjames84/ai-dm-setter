@@ -272,6 +272,15 @@ const allSettingsRaw = () => {
   return _settingsCache;
 };
 /** Settings as exposed to the browser and the engine: secrets stripped. */
+// One-shot (2026-09-09): the Instagram token died and every autopilot send
+// failed for days, flagging each thread "send failed" and dropping it to
+// copilot. The token is fixed; clear those flags and put the threads back on
+// autopilot so the owner doesn't click through them one by one.
+if (getSetting('_clear_sendfailed_flags_v1') == null) {
+  const r = db.prepare("UPDATE conversations SET needs_human = 0, needs_human_reason = NULL, mode = 'autopilot' WHERE needs_human = 1 AND needs_human_reason LIKE 'send failed%'").run();
+  setSetting('_clear_sendfailed_flags_v1', '1');
+  if (r.changes) console.log(`[migrate] cleared ${r.changes} "send failed" flag(s), threads back on autopilot`);
+}
 const allSettings = () => {
   const raw = allSettingsRaw();
   const s = { ...raw };
@@ -1166,6 +1175,17 @@ app.get('/api/conversations/:id', requireAdmin, (req, res) => {
  */
 // Bulk set AI mode on many conversations at once (inbox multi-select). autopilot
 // = AI auto-sends; copilot = AI drafts, you approve; off = full manual.
+/** Clear every needs_human flag in one go. `send_failed_only` limits it to the
+ *  flags a dead Instagram token leaves behind, and puts those threads back on
+ *  autopilot (that failure is the only thing that dropped them to copilot). */
+app.post('/api/conversations/handled-all', requireAdmin, (req, res) => {
+  const onlySendFailed = !!req.body?.send_failed_only;
+  const r = onlySendFailed
+    ? db.prepare("UPDATE conversations SET needs_human = 0, needs_human_reason = NULL, mode = 'autopilot' WHERE needs_human = 1 AND needs_human_reason LIKE 'send failed%'").run()
+    : db.prepare('UPDATE conversations SET needs_human = 0, needs_human_reason = NULL WHERE needs_human = 1').run();
+  res.json({ ok: true, cleared: r.changes });
+});
+
 app.post('/api/conversations/bulk-mode', requireAdmin, (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).slice(0, 1000) : [];
   const mode = String(req.body?.mode || '');
