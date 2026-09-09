@@ -387,6 +387,25 @@ if (getSetting('_strip_old_ladder_v2') == null) {
   else console.log('[migrate] objection_handlers pass 2: no 300-500 range found');
   setSetting('_strip_old_ladder_v2', '1');
 }
+// One-shot (2026-09-09): the price-objection handler ended with the open
+// "how much would you set aside each month?" ask, which fires the moment a
+// lead asks the price — before any qualifying. Keep the owner's line, drop the
+// money ask, hand back to the sequence. Old reply logged.
+if (getSetting('_price_handler_no_money_v1') == null) {
+  let rows = []; try { rows = JSON.parse(getSetting('objection_handlers') || '[]'); } catch { rows = []; }
+  let changed = 0;
+  const out = (Array.isArray(rows) ? rows : []).map((r) => {
+    const reply = String(r.reply || '');
+    if (/set aside each month/i.test(reply) && /price|how much/i.test(String(r.trigger || ''))) {
+      console.log('[migrate] OLD price handler reply: ' + reply);
+      changed++;
+      return { ...r, reply: "it's not one size fits all, i wouldn't put you on the same plan as your 50 year old grandpa 😂 depends what you actually need, that's what the call's for. then go straight back to whichever qualifying question you were on. do NOT ask about money here." };
+    }
+    return r;
+  });
+  if (changed) { setSetting('objection_handlers', JSON.stringify(out)); console.log('[migrate] price handler no longer asks about money'); }
+  setSetting('_price_handler_no_money_v1', '1');
+}
 const allSettings = () => {
   const raw = allSettingsRaw();
   const s = { ...raw };
