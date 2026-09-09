@@ -375,6 +375,18 @@ if (getSetting('_strip_old_ladder_v1') == null) {
   }
   setSetting('_strip_old_ladder_v1', '1');
 }
+// Pass 2 on the objection handlers: log them verbatim, then replace any
+// "300 … 500" range (whatever the punctuation) with the new wording.
+if (getSetting('_strip_old_ladder_v2') == null) {
+  let rows = []; try { rows = JSON.parse(getSetting('objection_handlers') || '[]'); } catch { rows = []; }
+  console.log('[migrate] objection_handlers now: ' + JSON.stringify(rows));
+  const fix = (t) => String(t || '').replace(/£?\s?(?:300|250)\s?.{0,6}?\s?£?\s?500(?:\s?(?:a|per|\/)\s?(?:month|mo|pm))?/gi, '£200 to £300 a month (or the local equivalent from REGIONAL AFFORDABILITY in the Routing Rules)');
+  let changed = 0;
+  const out = (Array.isArray(rows) ? rows : []).map((r) => { const nr = { ...r, trigger: fix(r.trigger), reply: fix(r.reply) }; if (nr.trigger !== r.trigger || nr.reply !== r.reply) changed++; return nr; });
+  if (changed) { setSetting('objection_handlers', JSON.stringify(out)); console.log(`[migrate] objection_handlers pass 2: ${changed} updated`); }
+  else console.log('[migrate] objection_handlers pass 2: no 300-500 range found');
+  setSetting('_strip_old_ladder_v2', '1');
+}
 const allSettings = () => {
   const raw = allSettingsRaw();
   const s = { ...raw };
