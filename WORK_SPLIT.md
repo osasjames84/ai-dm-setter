@@ -1,0 +1,120 @@
+# Two-week beta: who builds what
+
+Two agents, one repo, zero overlap. **Claude** owns the server. **Astra** owns the browser. JD is the referee and the only one who deploys is Claude.
+
+Target at the end of week 2: a second business can be hand-onboarded (as a Meta tester), connect their Instagram, load a script template, test it against simulated leads, go live, and be billed in Stripe test mode. Meta app review starts after, in parallel with the polish.
+
+---
+
+## Ownership by file (the only rule that matters)
+
+| Lane | Owns | Never touches |
+|------|------|---------------|
+| **Claude (backend)** | `server.js`, `lib/**`, `prompts/**`, `migrations/**`, `scripts/**`, `package.json`, `.env.example`, `railpack.json`, deploys, database | `public/**` |
+| **Astra (frontend)** | `public/**` (index.html, and any `public/js/*.js`, `public/css/*.css` it splits out) | everything else |
+
+If a frontend feature needs a backend change that isn't in the contract below, Astra writes it down in `CONTRACT_REQUESTS.md` (one line: endpoint, shape, why) and builds against a local mock until it lands. Claude checks that file every day.
+
+Branches: Claude on `beta/backend`, Astra on `beta/frontend`. Both merge into `main` through JD. No force pushes. Commit messages say what changed and why, in plain English.
+
+---
+
+## Week 1
+
+| Day | Claude (backend) | Astra (frontend) |
+|-----|------------------|------------------|
+| 1 | Postgres alongside SQLite; numbered SQL migrations run on boot; `accounts`, `users`, `sessions` tables; JD's data becomes account #1 | Split `index.html` into `public/js/{api,state,ui,pages/*}.js` with plain script tags (no build step, no framework); zero behaviour change; light mode fixed or removed |
+| 2 | Magic-link login: `POST /api/auth/magic-link`, `GET /auth/magic`, `GET /api/me`, `POST /api/logout`; session cookie replaces the PIN header; `requireAccount` middleware | Login screen: email box → "check your email" → landed. Replaces the PIN gate. Uses `/api/me` for the shell (account name, plan badge, Instagram status dot) |
+| 3 | Every query scoped to `account_id` (conversations, messages, drafts, stage_events, settings); per-account settings; per-account kill switch and default mode | Remove the 13 stub controls; generic copy pass (no "coach", "fitness", "physique"; say offer, customer, next step) |
+| 4 | Script templates: `prompts/templates/*.json` (fitness coach, online course, agency, e-com, consultant); `GET /api/templates`, `POST /api/settings/apply-template` | Template picker on the Prompt page; "Fill empty sections" takes a template; "What the AI sees" read-only panel (`GET /api/script/assembled`) |
+| 5 | Script quality checks `GET /api/script/checks`; conversion goal setting (call / checkout link / form / human) in settings; regional currency defaults per account | Onboarding wizard shell (5 steps, progress, resume where you left off) driven by `GET /api/onboarding`; step 2 (template) and step 3 (sections) wired; quality checks shown inline |
+
+## Week 2
+
+| Day | Claude (backend) | Astra (frontend) |
+|-----|------------------|------------------|
+| 6 | Instagram OAuth: `instagram_accounts` table, encrypted tokens, `GET /auth/instagram/start`, `/auth/instagram/callback`, `POST /api/instagram/disconnect`; webhook routing by account; token refresh job; signature verification mandatory | Onboarding step 1 (Connect Instagram button → OAuth → connected state → reconnect banner when `needs_reconnect`); Settings Instagram card rebuilt on the new status shape |
+| 7 | Test drive: `POST /api/onboarding/test-drive` runs the script against 5 generic sim personas and returns transcripts; go-live: `POST /api/onboarding/go-live` | Onboarding step 5: transcripts side by side, pass/fail notes, "Go live" button; step 4 (next-step link) |
+| 8 | Stripe: customer per account, `GET /api/billing`, `POST /api/billing/checkout`, `POST /api/billing/portal`; plans and 7-day trial; webhook for card failure → AI paused | Billing page: plan, trial days left, usage, upgrade and manage buttons; paused banner when `status = 'paused'` |
+| 9 | AI usage metering per account per day (tokens, cost); `GET /api/usage`; team invites `GET/POST/DELETE /api/team` | Usage page; Team Members card real (invite, role, remove); unread state UI (bold rows, count, "waiting longest" sort, title counter) using `unread` on rows and `POST /api/conversations/:id/seen` |
+| 10 | Error tracking (Sentry), nightly backups off-box, structured logs with account id, data export and account deletion endpoints | Mobile inbox: prospect panel as a bottom sheet, `100dvh`, 16px inputs, 44px targets; push notification + sound for hot leads and flags; undo on send |
+
+Days 11 to 14: integration on `main`, JD onboards himself from scratch as a fresh account, then one outside beta user. Bugs only.
+
+---
+
+## API contract (Astra builds against this; Claude ships it in this order)
+
+All JSON. All endpoints require the session cookie except the auth and webhook ones. Errors are `{ "error": "plain sentence" }` with a 4xx/5xx status. Until the auth endpoints land (day 2), the existing `x-admin-pin` header still works so Astra can develop against the current server.
+
+### Auth
+```
+POST /api/auth/magic-link   { "email": "jd@example.com" }              → 200 { "ok": true }
+GET  /auth/magic?token=…    sets the session cookie, redirects to /
+GET  /api/me                → { "user": { "id", "email", "role": "owner"|"setter" },
+                               "account": { "id", "name", "plan": "trial"|"starter"|"pro", "status": "active"|"paused", "trial_ends_at" },
+                               "instagram": { "connected": bool, "username": "jd.osas"|null, "needs_reconnect": bool, "signature_verified": bool },
+                               "onboarding_complete": bool }
+POST /api/logout            → 200
+```
+
+### Settings and script (existing shapes stay)
+```
+GET  /api/settings                    → { "settings": {…all keys…}, "stages": [...], "modes": [...], "aiReady": bool }
+PUT  /api/settings                    { any subset of keys } → { "ok": true, "settings": {…} }
+GET  /api/templates                   → [ { "id": "fitness-coach", "name", "description", "sections": { "prompt_persona": "…", … } } ]
+POST /api/settings/apply-template     { "id": "fitness-coach", "only_empty": true } → { "ok": true, "filled": ["prompt_persona", …] }
+GET  /api/script/assembled            → { "text": "…the full system prompt as the AI sees it…" }
+GET  /api/script/checks               → [ { "section": "prompt_booking", "level": "warn"|"error", "message": "Never says how to confirm the booking." } ]
+```
+
+### Onboarding
+```
+GET  /api/onboarding                  → { "steps": { "instagram": bool, "template": bool, "sections": bool, "next_step": bool, "test_drive": bool, "live": bool } }
+POST /api/onboarding/test-drive       { "persona_ids": ["price_hunter", …] | omitted for the default 5 }
+                                      → { "runs": [ { "persona": { "id", "name" }, "transcript": [ { "role": "lead"|"setter", "text" } ], "final_stage": "qualifying", "notes": [ "Asked about money before question 4" ] } ] }
+                                      (synchronous, up to ~90s; show a progress state)
+POST /api/onboarding/go-live          → { "ok": true }   (turns the kill switch off, default mode autopilot)
+```
+
+### Instagram
+```
+GET  /api/instagram/status            → same object as /api/me.instagram plus { "webhook_url", "verify_token_set" }
+GET  /auth/instagram/start            → 302 to Meta login
+GET  /auth/instagram/callback         → 302 to /?connected=1 (or /?connect_error=…)
+POST /api/instagram/disconnect        → { "ok": true }
+```
+
+### Inbox additions
+```
+GET  /api/conversations               rows gain: "unread": int, "last_seen_at": iso|null, "waiting_since": iso|null
+POST /api/conversations/:id/seen      → { "ok": true }
+POST /api/conversations/handled-all   { "send_failed_only": bool } → { "ok": true, "cleared": n }   (exists)
+```
+
+### Billing, usage, team
+```
+GET  /api/billing                     → { "plan", "status", "trial_ends_at", "renews_at", "card_last4": "4242"|null }
+POST /api/billing/checkout            { "plan": "starter"|"pro" } → { "url": "https://checkout.stripe.com/…" }
+POST /api/billing/portal              → { "url" }
+GET  /api/usage                       → { "month": { "conversations": n, "ai_messages": n, "ai_cost_gbp": 12.40, "bookings": n }, "daily": [ { "date", "ai_cost_gbp", "ai_messages" } ] }
+GET  /api/team                        → [ { "id", "email", "role", "invited_at", "accepted": bool } ]
+POST /api/team/invite                 { "email", "role": "setter" } → { "ok": true }
+DELETE /api/team/:id                  → { "ok": true }
+```
+
+### Persona ids for test drive
+`price_hunter`, `warm_keyword`, `think_about_it`, `broke`, `skeptic`, `ghost`, `dream_buyer`, `tirekicker`, `underage`, `no_time`, `diy` (briefs are generic, editable later per account).
+
+---
+
+## Definition of done for the beta
+
+- A brand new email can sign up, log in, connect an Instagram test account, pick a template, pass the quality checks, run the test drive, go live, and see a Stripe trial.
+- JD's live account keeps working throughout, with no gap in DMs.
+- No PIN anywhere. No `IG_PAGE_TOKEN` in env; tokens live encrypted per account.
+- Every page usable on a phone.
+- `npm test` runs the pure-function tests green.
+
+## Not in these two weeks
+Meta app review (G), prompt versions (E.8), per-lead memory (E.9), server-sent events (E.6), analytics (E.15), the full module split of `server.js` (F.7).
