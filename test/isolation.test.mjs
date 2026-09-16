@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 
 const PORT = 5000 + Math.floor(Math.random() * 1000);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -18,7 +19,7 @@ const logLines = [];
 
 const env = { ...process.env, PORT: String(PORT), DATA_DIR: DATA, OWNER_EMAIL: OWNER, ADMIN_PIN: '4242',
   IG_PAGE_TOKEN: '', IG_VERIFY_TOKEN: '', IG_BUSINESS_ID: '', IG_APP_SECRET: '', IG_APP_ID: '', RESEND_API_KEY: '', SENTRY_DSN: '', BACKUP_S3_BUCKET: '', ANTHROPIC_API_KEY: '' };
-const server = spawn(process.execPath, ['server.js'], { cwd: path.resolve(new URL('..', import.meta.url).pathname), env });
+const server = spawn(process.execPath, ['server.js'], { cwd: fileURLToPath(new URL('..', import.meta.url)), env });
 server.stdout.on('data', (d) => logLines.push(...String(d).split('\n')));
 server.stderr.on('data', (d) => logLines.push(...String(d).split('\n')));
 
