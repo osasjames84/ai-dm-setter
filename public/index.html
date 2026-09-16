@@ -13,10 +13,19 @@
   <div class="login-card">
     <div class="brand-badge" data-icon="plane"></div>
     <h1>dmSetter</h1>
-    <p>Enter your admin PIN to continue</p>
-    <input id="pin-input" aria-label="Admin PIN" type="password" inputmode="numeric" autocomplete="off" placeholder="&bull;&bull;&bull;&bull;">
-    <div class="login-err" id="login-err"></div>
-    <button class="btn btn-primary" id="pin-go" style="width:100%;padding:11px;">Continue</button>
+    <p id="login-description">Sign in or create an account with your email.</p>
+    <form id="login-form">
+      <label for="login-email" class="login-label">Email address</label>
+      <input id="login-email" type="email" autocomplete="email" inputmode="email" placeholder="you@business.com" required>
+      <button class="btn btn-primary" id="login-send" type="submit" style="width:100%;margin-top:16px">Send sign-in link</button>
+    </form>
+    <div id="login-sent" class="hidden" role="status" aria-live="polite">
+      <h2>Check your email</h2>
+      <p>A sign-in link was requested for <strong id="login-address"></strong>. Open it in this browser to continue. Check your spam folder too.</p>
+      <button class="btn btn-ghost" id="login-change" type="button">Use another email or resend</button>
+    </div>
+    <div class="login-err" id="login-err" role="alert"></div>
+    <button class="btn btn-ghost hidden" id="login-retry" type="button">Retry connection</button>
   </div>
 </div>
 
@@ -41,6 +50,7 @@
     </div>
   </aside>
   <main id="main">
+    <div id="account-access-banner" class="account-access-banner hidden" role="status"></div>
     <section id="view-dashboard" class="hidden"><div class="page" id="dash-page"></div></section>
     <section id="view-messages" class="hidden"></section>
     <section id="view-drafts" class="hidden"><div class="page" id="drafts-page"></div></section>

@@ -10,10 +10,19 @@ function renderKillDot() {
   if (txt) txt.textContent = on ? 'AI paused' : 'AI active';
 }
 function renderAccount() {
-  const coach = ((state.settings && state.settings.settings && state.settings.settings.coach_name) || '').trim();
-  $('#acc-name').textContent = coach || 'My account';
-  $('#acc-avatar').textContent = (coach || 'M').charAt(0).toUpperCase();
-  $('#acc-sub').textContent = state.settings && state.settings.igConfigured ? 'Instagram connected' : 'Simulator mode';
+  const me = state.me;
+  if (!me) return;
+  const name = me.account.name || me.user.email || 'My account';
+  const access = me.account.access_status;
+  $('#acc-name').textContent = name;
+  $('#acc-avatar').textContent = name.charAt(0).toUpperCase();
+  const ig = me.instagram || {};
+  $('#acc-sub').textContent = access === 'pending' ? 'Awaiting approval' : access === 'paused' ? 'Access paused' : ig.needs_reconnect ? 'Reconnect Instagram' : ig.connected ? 'Instagram connected' : 'Instagram not connected';
+  $('#acc-sub').classList.toggle('connection-warning', !!ig.needs_reconnect);
+  const banner = $('#account-access-banner');
+  banner.textContent = access === 'pending' ? 'Your account is awaiting approval. You can prepare your setup while you wait.' : access === 'paused' ? 'Account access is paused. You can still read your inbox. Contact JD to reactivate.' : '';
+  banner.classList.toggle('hidden', !banner.textContent);
+  document.documentElement.classList.toggle('has-access-banner', !!banner.textContent);
 }
 async function loadSettings() {
   try { state.settings = await api('/api/settings'); renderKillDot(); renderAccount(); } catch (e) { /* ignore */ }
@@ -25,11 +34,12 @@ window.addEventListener('beforeunload', (e) => {
 
 /* ============================== poll loop ============================== */
 setInterval(() => {
-  if (!state.pin || document.hidden || $('#app').classList.contains('hidden')) return;
+  if (!state.authenticated || document.hidden || $('#app').classList.contains('hidden')) return;
   // Never overwrite the settings baseline while the owner is mid-edit on a page
   // that renders from it — a save from another tab would silently replace his work.
   const editing = (state.route === 'prompt' && state.scriptDirty) || (state.route === 'settings' && state.settingsDirty);
   if (!editing) loadSettings();
+  loadIdentity().catch((err) => { if (err.status === 401 && state.authenticated) showLogin('Your session expired. Request a new sign-in link.'); });
   refreshBadge();
   if (Date.now() - lastIgStatusAt > 10 * 60 * 1000) loadIgStatus(); // IG Graph call is expensive — refresh the auth-error dot at most every 10 min
   if (state.route === 'dashboard') loadDashboard();
@@ -68,10 +78,4 @@ function setupTheme() {
 
 setupTheme();
 hydrateIcons(document);
-if (state.pin) {
-  api('/api/auth', { method: 'POST' })
-    .then(() => { $('#login').classList.add('hidden'); $('#app').classList.remove('hidden'); boot(); })
-    .catch(() => { /* stays on login */ });
-} else {
-  $('#pin-input').focus();
-}
+restoreSession();

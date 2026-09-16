@@ -1164,3 +1164,15 @@ button:focus-visible, a:focus-visible { outline:2px solid var(--indigo); outline
   .composer .cal-btn { grid-column:2; grid-row:2; width:44px; height:44px; }
   .composer .send-btn { grid-column:3; grid-row:2; min-width:44px; min-height:44px; }
 }
+
+/* Day two: email sign-in and real account identity, using the existing theme. */
+.login-card #login-email { text-align:left; font-size:16px; letter-spacing:normal; font-weight:400; }
+.login-label { display:block; text-align:left; margin:0 0 6px; font-size:13px; color:var(--muted); }
+#login-sent h2 { font-size:20px; margin-top:20px; }
+#login-sent p { overflow-wrap:anywhere; }
+.account-access-banner { padding:12px 24px; background:var(--amber-soft); color:var(--text); border-bottom:1px solid var(--border); font-size:13px; }
+.connection-warning { color:var(--amber) !important; }
+html.has-access-banner #main { display:flex; flex-direction:column; }
+html.has-access-banner #account-access-banner { flex-shrink:0; }
+html.has-access-banner #view-messages { height:auto; flex:1; min-height:0; }
+html.has-access-banner #main > section:not(#view-messages) { overflow:auto; min-height:0; }

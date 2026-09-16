@@ -187,7 +187,7 @@ async function toggleRecord(btn, apply) {
 async function uploadVoiceBlob(file, apply) {
   const fd = new FormData(); fd.append('file', file);
   try {
-    const res = await fetch('/api/voice', { method: 'POST', headers: { 'x-admin-pin': state.pin }, body: fd });
+    const res = await sessionFetch('/api/voice', { method: 'POST', body: fd });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'upload failed');
     syncScriptFromDom();
@@ -622,7 +622,7 @@ function bindScriptEvents(col) {
       const orig = kbu.innerHTML; kbu.disabled = true; kbu.innerHTML = icon('upload', 15) + 'Uploading…';
       try {
         const fd = new FormData(); fd.append('file', file);
-        const res = await fetch('/api/knowledge', { method: 'POST', headers: { 'x-admin-pin': state.pin }, body: fd });
+        const res = await sessionFetch('/api/knowledge', { method: 'POST', body: fd });
         const out = await res.json();
         if (!res.ok) throw new Error(out.error || 'Upload failed');
         toast('Added “' + out.document.name + '” to the knowledge base');

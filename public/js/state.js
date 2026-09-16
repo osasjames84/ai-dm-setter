@@ -1,7 +1,9 @@
 'use strict';
 /* ============================== state / api ============================== */
 const state = {
-  pin: sessionStorage.getItem('pin') || '',
+  authenticated: false,
+  me: null,
+  sessionEpoch: 0,
   route: 'dashboard',
   settings: null,
   stats: null,

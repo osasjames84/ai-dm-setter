@@ -25,3 +25,10 @@
 - User approved committing current frontend and planning revisions to beta/frontend.
 - Day-two admin contract approved: authenticated JD platform-operator account only; deny customer owners/setters server-side.
 - Payment scope remains external; original theme retained. No backend files or production data included.
+
+## 2026-09-16: day two, cookie-session frontend
+- Replaced PIN with email magic-link form, check-email/resend state, session restoration, logout and retry UI. Uploads/downloads now use same-origin session cookies.
+- Account shell uses /api/me identity, Instagram connection state and pending/paused access banner; no billing or plan UI. Logout clears cached account data and rejects stale responses.
+- Tested against beta/backend 5c5d29d in isolated /tmp integration on port 5330: request/consume link, reload, logout, new pending account, paused readable inbox; no captured browser errors/warnings.
+- API transport checks passed for cookies/no PIN, anonymous versus expired sessions and stale-response rejection. Live mail/AI/Instagram disabled; test links consumed from local backend logs.
+- Backend files unchanged; integration notes in CONTRACT_REQUESTS.md cover PIN fallback, email failure/token logging and actual admin payload differences. Frontend must ship with the session backend.

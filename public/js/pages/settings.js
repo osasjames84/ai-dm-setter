@@ -371,7 +371,7 @@ function renderSettings() {
   if (backupBtn) backupBtn.addEventListener('click', async () => {
     backupBtn.disabled = true;
     try {
-      const res = await fetch('/api/backup', { headers: { 'x-admin-pin': state.pin } });
+      const res = await sessionFetch('/api/backup');
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || ('HTTP ' + res.status));
