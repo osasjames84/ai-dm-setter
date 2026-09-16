@@ -118,3 +118,31 @@ DELETE /api/team/:id                  → { "ok": true }
 
 ## Not in these two weeks
 Meta app review (G), prompt versions (E.8), per-lead memory (E.9), server-sent events (E.6), analytics (E.15), the full module split of `server.js` (F.7).
+
+---
+
+## Day 2 contract additions (shipped on beta/backend; Astra's requests from CONTRACT_REQUESTS.md)
+
+```
+GET  /api/me                          user gains "is_platform_admin": bool; account.access_status is pending|active|paused (no plan/trial fields)
+
+Platform admin (JD only; 403 for everyone else)
+GET  /api/admin/accounts              → [ { "id", "name", "access_status", "owner_email", "users", "conversations", "last_login_at", "instagram_business_id", "created_at" } ]
+PATCH /api/admin/accounts/:id/access  { "status": "pending"|"active"|"paused" } → { "ok", "id", "access_status" }   (audited)
+GET  /api/admin/accounts/:id/usage    → same shape as /api/usage
+GET  /api/admin/accounts/:id/audit    → [ { "action": "access:paused"|"access:active"|"team:invite"|"team:remove", "detail", "actor_user_id", "at" } ]
+
+Usage (own account)
+GET  /api/usage                       → { "month": { "calls", "ai_messages", "input_tokens", "output_tokens", "cost_usd", "conversations", "bookings" }, "daily": [ { "day", "calls", "input_tokens", "output_tokens", "cost_usd" } ], "note" }
+                                        cost_usd is an estimate at Anthropic list prices (there is no gbp field)
+
+Team (owner role only for invite/remove)
+GET  /api/team                        → [ { "id", "email", "role": "owner"|"setter", "accepted": bool, "created_at", "last_login_at" } ]
+POST /api/team/invite                 { "email", "role" } → { "ok": true }    (409 if the email already has a login; sends a sign-in link)
+DELETE /api/team/:id                  → { "ok": true }                        (400 when removing yourself)
+
+Access enforcement
+- pending / paused accounts get 403 with a plain-sentence error on: send, request-draft, preview, approve, send-all, content analyze/more.
+- The scheduler treats a non-active account as kill-switched, and deliver() refuses sends for it, so queued follow-ups and sequences never go out either.
+- Frontend: show a banner from account.access_status; the AI Preview and Approve buttons should be disabled with the same wording when not active.
+```

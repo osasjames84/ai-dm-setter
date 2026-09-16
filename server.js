@@ -22,6 +22,7 @@ import { runMigrations } from './lib/migrations.js';
 import { runAs, enterAs, outside, currentAccount, currentAccountOrFirst, FIRST_ACCOUNT_ID } from './lib/tenancy.js';
 import { initAuth, requestMagicLink, consumeMagicLink, sessionFromRequest, logout as authLogout, pruneAuth, isEmail, normalizeEmail } from './lib/auth.js';
 import { sendEmail } from './lib/notify.js';
+import { setUsageHook, costUsd } from './lib/usage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 try { process.loadEnvFile(path.join(__dirname, '.env')); } catch { /* prod uses platform env */ }
@@ -478,6 +479,25 @@ initAuth(db, { isProd: !!process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV
   // The env-token Instagram account belongs to acc_1 until OAuth replaces it.
   if (process.env.IG_BUSINESS_ID) db.prepare('INSERT OR IGNORE INTO instagram_accounts (account_id, business_id, status, updated_at) VALUES (?, ?, ?, ?)').run(FIRST_ACCOUNT_ID, String(process.env.IG_BUSINESS_ID), 'connected', new Date().toISOString());
 }
+// The OWNER_EMAIL user is the platform admin (JD): approves and pauses accounts.
+{
+  const ownerEmail = normalizeEmail(process.env.OWNER_EMAIL || '');
+  if (ownerEmail) db.prepare('UPDATE users SET is_platform_admin = 1 WHERE email = ?').run(ownerEmail);
+}
+// AI usage → ai_usage, one row per account/day/model.
+setUsageHook((u) => {
+  const a = currentAccountOrFirst('usage');
+  const day = new Date().toISOString().slice(0, 10);
+  db.prepare(`INSERT INTO ai_usage (account_id, day, model, calls, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+    VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+    ON CONFLICT(account_id, day, model) DO UPDATE SET calls = calls + 1, input_tokens = input_tokens + excluded.input_tokens,
+      output_tokens = output_tokens + excluded.output_tokens, cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens, cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens`)
+    .run(a, day, u.model, u.input, u.output, u.cache_read, u.cache_write);
+});
+/** Is this account allowed to run the AI and send? (pending / paused accounts are read-only) */
+const accountActive = (id) => db.prepare('SELECT access_status FROM accounts WHERE id = ?').get(id)?.access_status === 'active';
+const audit = (accountId, actorUserId, action, detail = '') =>
+  db.prepare('INSERT INTO account_audit (account_id, actor_user_id, action, detail, at) VALUES (?, ?, ?, ?, ?)').run(accountId, actorUserId || null, action, String(detail || '').slice(0, 500), nowIso());
 /** Which account owns an Instagram business id (webhook routing). */
 const accountForBusinessId = (bid) => db.prepare('SELECT account_id FROM instagram_accounts WHERE business_id = ?').get(String(bid || ''))?.account_id || null;
 
@@ -486,7 +506,11 @@ const cleanOutbound = (t) => (getSetting('strip_dashes') === '1' ? stripDashes(t
 
 // Settings PLUS injected knowledge-base text + Calendly availability — used only
 // for engine calls so the frontend settings blob (allSettings) stays lean.
-const engineSettings = () => ({ ...allSettings(), knowledge_text: knowledgeText(), calendly_slots: calendlyText() });
+const engineSettings = () => {
+  const s = { ...allSettings(), knowledge_text: knowledgeText(), calendly_slots: calendlyText() };
+  if (!accountActive(currentAccountOrFirst('engine'))) s.kill_switch = '1';   // pending / paused: the AI never runs
+  return s;
+};
 
 // Owner email notifications (FEATURE 3) — dormant until RESEND_API_KEY is set.
 // Recipients come from the comma/space-separated notify_emails setting; a bad
@@ -647,6 +671,22 @@ function requireAdmin(req, res, next) {
   runAs(FIRST_ACCOUNT_ID, () => next());
 }
 const requireAccount = requireAdmin;
+/** AI and send routes: the account must be approved and not paused. */
+function requireActive(req, res, next) {
+  const st = req.account?.access_status;
+  if (st === 'active') return next();
+  res.status(403).json({ error: st === 'paused' ? 'This account is paused. Contact support to resume.' : 'This account is pending approval. You can set everything up, but the AI stays off until it is approved.' });
+}
+/** Platform admin (JD) only. */
+function requirePlatformAdmin(req, res, next) {
+  if (req.user && req.user.is_platform_admin) return next();
+  res.status(403).json({ error: 'Not allowed' });
+}
+/** Account owner only (team management). */
+function requireOwner(req, res, next) {
+  if (req.user && req.user.role === 'owner') return next();
+  res.status(403).json({ error: 'Only the account owner can do that' });
+}
 
 // Absolute base URL for links Instagram must fetch itself (Audio Arsenal clips).
 // Railway injects RAILWAY_PUBLIC_DOMAIN; PUBLIC_BASE_URL can override locally.
@@ -793,6 +833,7 @@ const TEST_MARKER_RE = /dmsetter\s*test|just testing|\btest \d+\/\d+\b/i;
 const inFlightSends = new Map(); // external_id → expiry epoch ms
 async function deliver(conv, text, source) {
   let sentMid = null;
+  if (!accountActive(conv.account_id || currentAccountOrFirst('deliver'))) return { ok: false, reason: 'account not active' };
   // Optional owner-enabled dash cleanup, applied before anything else so every
   // downstream path (dedupe, IG send, DB store) sees the same text.
   text = cleanOutbound(text);
@@ -1095,11 +1136,86 @@ app.get('/api/me', requireAccount, (req, res) => {
   const ig = db.prepare('SELECT * FROM instagram_accounts WHERE account_id = ?').get(req.accountId);
   const igErr = parseJ(getSetting('ig_auth_error') || '', null);
   res.json({
-    user: { id: req.user.id, email: req.user.email, role: req.user.role },
+    user: { id: req.user.id, email: req.user.email, role: req.user.role, is_platform_admin: !!req.user.is_platform_admin },
     account: { id: req.account.id, name: req.account.name, access_status: req.account.access_status },
     instagram: { connected: !!ig && igConfigured(), username: ig?.username || null, needs_reconnect: !!igErr, signature_verified: !!process.env.IG_APP_SECRET },
     onboarding_complete: getSetting('kill_switch') === '0' && !!String(getSetting('prompt_qualification') || '').trim(),
   });
+});
+
+// ---------- platform admin (JD only) ----------
+app.get('/api/admin/accounts', requireAccount, requirePlatformAdmin, (req, res) => {
+  const rows = db.prepare(`SELECT a.*, 
+      (SELECT email FROM users u WHERE u.account_id = a.id AND u.role = 'owner' ORDER BY created_at LIMIT 1) AS owner_email,
+      (SELECT COUNT(*) FROM users u WHERE u.account_id = a.id) AS users,
+      (SELECT COUNT(*) FROM conversations c WHERE c.account_id = a.id) AS conversations,
+      (SELECT MAX(last_login_at) FROM users u WHERE u.account_id = a.id) AS last_login_at,
+      (SELECT business_id FROM instagram_accounts i WHERE i.account_id = a.id) AS instagram_business_id
+    FROM accounts a ORDER BY a.created_at DESC`).all();
+  res.json(rows);
+});
+app.patch('/api/admin/accounts/:id/access', requireAccount, requirePlatformAdmin, (req, res) => {
+  const status = String(req.body?.status || '');
+  if (!['pending', 'active', 'paused'].includes(status)) return res.status(400).json({ error: 'status must be pending, active or paused' });
+  const a = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
+  if (!a) return res.status(404).json({ error: 'No such account' });
+  db.prepare('UPDATE accounts SET access_status = ? WHERE id = ?').run(status, a.id);
+  audit(a.id, req.user.id, 'access:' + status, `was ${a.access_status}`);
+  res.json({ ok: true, id: a.id, access_status: status });
+});
+app.get('/api/admin/accounts/:id/usage', requireAccount, requirePlatformAdmin, (req, res) => {
+  if (!db.prepare('SELECT 1 FROM accounts WHERE id = ?').get(req.params.id)) return res.status(404).json({ error: 'No such account' });
+  res.json(usageSummary(req.params.id));
+});
+app.get('/api/admin/accounts/:id/audit', requireAccount, requirePlatformAdmin, (req, res) => {
+  res.json(db.prepare('SELECT * FROM account_audit WHERE account_id = ? ORDER BY id DESC LIMIT 200').all(req.params.id));
+});
+/** 30 days of AI usage for an account, with an estimated cost in USD at list prices. */
+function usageSummary(accountId) {
+  const since = new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
+  const rows = db.prepare('SELECT * FROM ai_usage WHERE account_id = ? AND day >= ? ORDER BY day').all(accountId, since);
+  const byDay = new Map();
+  let month = { calls: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0 };
+  const monthStart = new Date().toISOString().slice(0, 8) + '01';
+  for (const r of rows) {
+    const c = costUsd(r);
+    const d = byDay.get(r.day) || { day: r.day, calls: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0 };
+    d.calls += r.calls; d.input_tokens += r.input_tokens; d.output_tokens += r.output_tokens; d.cost_usd += c; byDay.set(r.day, d);
+    if (r.day >= monthStart) { month.calls += r.calls; month.input_tokens += r.input_tokens; month.output_tokens += r.output_tokens; month.cost_usd += c; }
+  }
+  const conv = db.prepare("SELECT COUNT(*) c FROM conversations WHERE account_id = ? AND created_at >= ?").get(accountId, monthStart).c;
+  const booked = db.prepare("SELECT COUNT(*) c FROM stage_events WHERE account_id = ? AND stage = 'call_booked' AND at >= ?").get(accountId, monthStart).c;
+  const round = (o) => ({ ...o, cost_usd: Math.round(o.cost_usd * 100) / 100 });
+  return { month: round({ ...month, conversations: conv, ai_messages: month.calls, bookings: booked }), daily: [...byDay.values()].map(round), note: 'cost_usd is an estimate at Anthropic list prices' };
+}
+app.get('/api/usage', requireAccount, (req, res) => res.json(usageSummary(req.accountId)));
+
+// ---------- team ----------
+app.get('/api/team', requireAccount, (req, res) => {
+  res.json(db.prepare('SELECT id, email, role, created_at, last_login_at, (last_login_at IS NOT NULL) AS accepted FROM users WHERE account_id = ? ORDER BY created_at').all(req.accountId)
+    .map((u) => ({ ...u, accepted: !!u.accepted })));
+});
+app.post('/api/team/invite', requireAccount, requireOwner, async (req, res) => {
+  const email = normalizeEmail(req.body?.email);
+  const role = String(req.body?.role || 'setter') === 'owner' ? 'owner' : 'setter';
+  if (!isEmail(email)) return res.status(400).json({ error: 'Enter a valid email address' });
+  if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) return res.status(409).json({ error: 'That email already has a login' });
+  db.prepare('INSERT INTO users (id, account_id, email, role, created_at) VALUES (?, ?, ?, ?, ?)').run('usr_' + crypto.randomBytes(6).toString('hex'), req.accountId, email, role, nowIso());
+  audit(req.accountId, req.user.id, 'team:invite', `${email} as ${role}`);
+  const t = requestMagicLink(email);
+  const link = `${PUBLIC_URL()}/auth/magic?token=${encodeURIComponent(t)}`;
+  const sent = await sendEmail(email, `${req.account.name} invited you to dmSetter`, `You've been added to ${req.account.name} on dmSetter as ${role}. Sign in here (valid for 20 minutes):\n\n${link}`);
+  if (!sent) console.log(`[team] invite link for ${email}: ${link}`);
+  res.json({ ok: true });
+});
+app.delete('/api/team/:id', requireAccount, requireOwner, (req, res) => {
+  const u = db.prepare('SELECT * FROM users WHERE id = ? AND account_id = ?').get(req.params.id, req.accountId);
+  if (!u) return res.status(404).json({ error: 'No such member' });
+  if (u.id === req.user.id) return res.status(400).json({ error: 'You cannot remove yourself' });
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
+  db.prepare('DELETE FROM users WHERE id = ?').run(u.id);
+  audit(req.accountId, req.user.id, 'team:remove', u.email);
+  res.json({ ok: true });
 });
 
 app.get('/api/prompt-starter', requireAdmin, (req, res) => {
@@ -1277,7 +1393,7 @@ app.get('/api/content', requireAdmin, (req, res) => {
   res.json(cached);
 });
 
-app.post('/api/content/analyze', requireAdmin, async (req, res) => {
+app.post('/api/content/analyze', requireAdmin, requireActive, async (req, res) => {
   const rows = contentLeadMessages();
   if (rows.length < 20) return res.status(400).json({ error: 'not enough lead messages yet' });
   try {
@@ -1319,7 +1435,7 @@ app.post('/api/content/analyze', requireAdmin, async (req, res) => {
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
-app.post('/api/content/more', requireAdmin, async (req, res) => {
+app.post('/api/content/more', requireAdmin, requireActive, async (req, res) => {
   const payload = parseJ(getSetting('content_analysis') || '', null);
   if (!payload) return res.status(400).json({ error: 'run an analysis first' });
   try {
@@ -1492,7 +1608,7 @@ app.patch('/api/conversations/:id', requireAdmin, (req, res) => {
 });
 
 /** Human manual send. Filters, delivers, resets AI-send counter, supersedes drafts. */
-app.post('/api/conversations/:id/send', requireAdmin, async (req, res) => {
+app.post('/api/conversations/:id/send', requireAdmin, requireActive, async (req, res) => {
   const conv = getConv(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Not found' });
   const text = String(req.body?.text || '').trim();
@@ -1508,7 +1624,7 @@ app.post('/api/conversations/:id/send', requireAdmin, async (req, res) => {
 });
 
 /** Ask the engine for a fresh draft; store as the single pending draft. */
-app.post('/api/conversations/:id/request-draft', requireAdmin, async (req, res) => {
+app.post('/api/conversations/:id/request-draft', requireAdmin, requireActive, async (req, res) => {
   const conv = getConv(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Not found' });
   // Kill switch halts ALL AI drafting globally — nothing reaches the engine.
@@ -1528,7 +1644,7 @@ app.post('/api/conversations/:id/request-draft', requireAdmin, async (req, res) 
  * DMs would run it. Same kill-switch gate and outbound filter as real sends —
  * blocked messages come back marked, not hidden.
  */
-app.post('/api/preview', requireAdmin, async (req, res) => {
+app.post('/api/preview', requireAdmin, requireActive, async (req, res) => {
   if (getSetting('kill_switch') === '1') return res.status(409).json({ error: 'Kill switch is on' });
   const history = (Array.isArray(req.body?.history) ? req.body.history : [])
     .filter((m) => m && (m.role === 'lead' || m.role === 'setter') && String(m.text || '').trim())
@@ -1563,7 +1679,7 @@ app.get('/api/drafts', requireAdmin, (req, res) => {
  * only a deliberate PATCH may set), and count this as an AI send toward the
  * autopilot guardrail. body.messages? lets the human edit before sending.
  */
-app.post('/api/drafts/:id/approve', requireAdmin, async (req, res) => {
+app.post('/api/drafts/:id/approve', requireAdmin, requireActive, async (req, res) => {
   const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(Number(req.params.id));
   if (!draft) return res.status(404).json({ error: 'Not found' });
   if (draft.status !== 'pending') return res.status(409).json({ error: 'Draft already resolved' });
@@ -1612,7 +1728,7 @@ app.post('/api/drafts/:id/approve', requireAdmin, async (req, res) => {
  *  - IG drafts outside Meta's 24h window — the API would reject them; they stay
  *    pending for the owner to send from his phone.
  */
-app.post('/api/drafts/send-all', requireAdmin, async (req, res) => {
+app.post('/api/drafts/send-all', requireAdmin, requireActive, async (req, res) => {
   // Oldest first: threads get their message in the order the AI queued them.
   const pending = db.prepare(`SELECT * FROM drafts WHERE status = 'pending' ORDER BY id ASC`).all();
   const regexes = parseJ(getSetting('outbound_filter_regexes'), []);
