@@ -146,3 +146,21 @@ Access enforcement
 - The scheduler treats a non-active account as kill-switched, and deliver() refuses sends for it, so queued follow-ups and sequences never go out either.
 - Frontend: show a banner from account.access_status; the AI Preview and Approve buttons should be disabled with the same wording when not active.
 ```
+
+## Days 3 to 5 contract notes (shipped on beta/backend)
+
+```
+GET  /api/templates                   → [ { "id", "name", "description", "sections": {…} } ]   five templates: fitness-coach, online-course, agency, ecommerce, consultant
+POST /api/settings/apply-template     { "id", "only_empty": true } → { "ok", "filled": [...] }   also sets settings.template_id
+GET  /api/script/assembled            → { "text" }
+GET  /api/script/checks               → [ { "section", "level": "error"|"warn", "message" } ]   section can also be "next_step" or "coach_name"; errors block go-live
+GET  /api/onboarding                  → { "steps": { instagram, template, sections, next_step, test_drive, live }, "access_status" }
+POST /api/onboarding/go-live          → { "ok": true } | 400 { "error", "checks": [errors] } | 403 when not active
+
+New settings keys (all strings, PUT /api/settings as usual):
+  template_id, next_step_type ("call"|"checkout"|"form"|"human"), next_step_link, currency ("GBP"), timezone, country, test_drive_passed_at
+  Calls use calendar_link; checkout/form use next_step_link; "human" needs no link.
+
+New accounts start with EMPTY script sections (no starter seeded): the wizard applies a template. The knowledge base is per account.
+Calendly: each account has its own token/availability; webhook URL is /webhook/calendly/<account id> (the first account keeps /webhook/calendly).
+```

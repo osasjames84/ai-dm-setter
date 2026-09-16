@@ -21,3 +21,14 @@ Shipped on `beta/backend`:
 - Contract additions appended to WORK_SPLIT.md (covers all four of Astra's requests except the async test drive, which is day 7).
 Verified in a sandbox: second account created pending; JD listed as platform admin; pause → preview refused; activate → audit shows both; invite/list/remove; a real AI call metered (116 in / 168 out, $0.02).
 Next (day 3): per-account knowledge-base and attachment folders, per-account Calendly settings and refresh, `OWNER_EMAIL` + `RESEND_API_KEY` on Railway, then templates (day 4).
+
+## Days 3 to 5 — per-account resources, templates, checks, onboarding
+Shipped on `beta/backend`:
+- Knowledge base per account (`DATA_DIR/knowledge/<account>/`, the first account's files moved in on boot). Upload routes re-enter the account context after multer (its callbacks drop AsyncLocalStorage; found in testing when a new account's upload landed in acc_1).
+- Calendly per account: token and "book in DMs" from account settings, availability cache per account (stale after 2h is dropped), webhook URL per account.
+- Five script templates in `prompts/templates/` with `GET /api/templates` and `POST /api/settings/apply-template`. New accounts no longer get the JD starter; the wizard applies a template.
+- `GET /api/script/assembled` (the prompt as the AI sees it), `GET /api/script/checks` (errors block go-live: empty core sections, no next-step link; warns: missing name, no confirm step, unfilled [placeholders], no follow-up text).
+- `GET /api/onboarding` step status, `POST /api/onboarding/go-live` (active accounts only, no error-level checks; turns the kill switch off and default mode to autopilot, audited).
+- New settings: template_id, next_step_type/link, currency, timezone, country, test_drive_passed_at.
+Verified: new account signs up pending → applies the agency template → checks list the placeholders → go-live 403 while pending → JD approves → go-live 400 until a booking link is set → go-live ok; knowledge and prompts isolated between accounts; JD's real script passes all checks.
+Next (day 6): Instagram OAuth per account, token refresh, disconnect, signature enforcement.

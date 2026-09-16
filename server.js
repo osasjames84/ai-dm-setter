@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { PERSONAS, PERSONA_BY_ID } from './lib/personas.js';
 import { igConfigured, igVerifyWebhook, igParseInbound, igSendText, igSendAudio, igSendAction, igProfile, igStatus, igFetchHistory, onIgAuthError } from './lib/instagram.js';
-import { generateMove, varyMessage, applyOutboundFilter, stripDashes } from './lib/engine.js';
+import { generateMove, varyMessage, applyOutboundFilter, stripDashes, buildSystemPrompt } from './lib/engine.js';
 import { analyzeDms, generateIdeas, classifyMessages } from './lib/content.js';
 import { createScheduler, withinMessagingWindow } from './lib/scheduler.js';
 import { matchExactPhrase } from './lib/triggers.js';
@@ -230,6 +230,15 @@ const SETTING_DEFAULTS = {
   flag_final_message: '',           // fallback final message
   flag_messages: '{}',              // {reason_code: message} per-reason overrides
   flag_enabled: '{}',               // {reason_code: bool} — the OWNER opts in per scenario in Settings › Flag Handling; NOTHING flags by default
+
+  // ---- Onboarding / positioning (any DM-based offer) ----
+  template_id: '',                  // which script template was applied (empty = none / custom)
+  next_step_type: 'call',           // call | checkout | form | human — what a qualified lead is sent to
+  next_step_link: '',               // checkout / form URL when next_step_type is not 'call' (calls use calendar_link)
+  currency: 'GBP',                  // shown in the UI and available to templates
+  timezone: '',                     // IANA name, e.g. Europe/London
+  country: '',                      // ISO-2, e.g. GB
+  test_drive_passed_at: '',         // ISO timestamp of the last passed test drive (onboarding step 5)
 
   // ---- System state (not user-editable via the Settings form) ----
   ig_auth_error: '',                // JSON {at, detail} when the IG token is dead/revoked; '' when healthy (FEATURE 2)
@@ -458,8 +467,7 @@ function createAccount({ name, ownerEmail }) {
     db.prepare('INSERT INTO accounts (id, name, access_status, created_at) VALUES (?, ?, ?, ?)').run(id, String(name || email.split('@')[0]), 'pending', nowIso());
     db.prepare('INSERT INTO users (id, account_id, email, role, created_at) VALUES (?, ?, ?, ?, ?)').run('usr_' + crypto.randomBytes(6).toString('hex'), id, email, 'owner', nowIso());
     runAs(id, () => {
-      seedSettingDefaults();
-      if (STARTER_PROMPT && STARTER_PROMPT.sections) for (const [k, v] of Object.entries(STARTER_PROMPT.sections)) if (k in SETTING_DEFAULTS && k !== 'coach_name') setSetting(k, v);
+      seedSettingDefaults();   // sections start empty: the onboarding wizard applies a template
       for (const f of ONE_SHOT_FLAGS) setSetting(f, '1');
       setSetting('kill_switch', '1');   // AI stays off until the account goes live (POST /api/onboarding/go-live)
     });
@@ -507,7 +515,7 @@ const cleanOutbound = (t) => (getSetting('strip_dashes') === '1' ? stripDashes(t
 // Settings PLUS injected knowledge-base text + Calendly availability — used only
 // for engine calls so the frontend settings blob (allSettings) stays lean.
 const engineSettings = () => {
-  const s = { ...allSettings(), knowledge_text: knowledgeText(), calendly_slots: calendlyText() };
+  const s = { ...allSettings(), knowledge_text: knowledgeText(), calendly_slots: calendlyText(currentAccountOrFirst('engine')) };
   if (!accountActive(currentAccountOrFirst('engine'))) s.kill_switch = '1';   // pending / paused: the AI never runs
   return s;
 };
@@ -525,8 +533,13 @@ const needsHumanNotifiedAt = new Map();
 
 // Calendly availability refresh (dormant until "book calls in DMs" + a token are set).
 function maybeRefreshCalendly() {
-  const token = getSetting('calendly_token');
-  if (getSetting('book_in_dms') === '1' && token) refreshCalendly(token);
+  // Every account with a token and "book in DMs" on gets its own availability cache.
+  for (const a of db.prepare('SELECT id FROM accounts').all()) {
+    runAs(a.id, () => {
+      const token = getSetting('calendly_token');
+      if (getSetting('book_in_dms') === '1' && token) refreshCalendly(token, {}, a.id);
+    });
+  }
 }
 maybeRefreshCalendly();                              // warm the cache on boot
 setInterval(maybeRefreshCalendly, 15 * 60 * 1000);  // and keep it fresh
@@ -671,6 +684,9 @@ function requireAdmin(req, res, next) {
   runAs(FIRST_ACCOUNT_ID, () => next());
 }
 const requireAccount = requireAdmin;
+/** Multer's callbacks fire outside the AsyncLocalStorage context, so any route
+ *  with an upload re-enters the account context after the upload middleware. */
+const reenterAccount = (req, res, next) => runAs(req.accountId || FIRST_ACCOUNT_ID, () => next());
 /** AI and send routes: the account must be approved and not paused. */
 function requireActive(req, res, next) {
   const st = req.account?.access_status;
@@ -1218,6 +1234,83 @@ app.delete('/api/team/:id', requireAccount, requireOwner, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- script templates ----------
+const TEMPLATES = (() => {
+  const dir = path.join(__dirname, 'prompts', 'templates');
+  try {
+    return fs.readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')))
+      .filter((t) => t && t.id && t.sections).sort((a, b) => a.name.localeCompare(b.name));
+  } catch (e) { console.warn('[templates] none loaded:', e.message); return []; }
+})();
+app.get('/api/templates', requireAccount, (req, res) => res.json(TEMPLATES));
+app.post('/api/settings/apply-template', requireAccount, (req, res) => {
+  const t = TEMPLATES.find((x) => x.id === String(req.body?.id || ''));
+  if (!t) return res.status(404).json({ error: 'No such template' });
+  const onlyEmpty = req.body?.only_empty !== false;
+  const filled = [];
+  for (const [k, v] of Object.entries(t.sections)) {
+    if (!(k in SETTING_DEFAULTS) || !String(v || '').trim()) continue;
+    if (onlyEmpty && String(getSetting(k) || '').trim()) continue;
+    setSetting(k, v); filled.push(k);
+  }
+  setSetting('template_id', t.id);
+  res.json({ ok: true, filled });
+});
+
+// ---------- script inspection ----------
+app.get('/api/script/assembled', requireAccount, (req, res) => res.json({ text: buildSystemPrompt(engineSettings()) }));
+/** Rule-based checks a script should pass before going live. level: error blocks go-live, warn does not. */
+function scriptChecks() {
+  const s = allSettings();
+  const out = [];
+  const txt = (k) => String(s[k] || '').trim();
+  const req = [['prompt_persona', 'Character & Personality is empty. The AI has no idea who it is texting as.'],
+    ['prompt_offer', 'Offer & Context is empty. The AI cannot explain what you sell.'],
+    ['prompt_qualification', 'Qualification Sequence is empty. The AI will not know what to ask.'],
+    ['prompt_booking', 'Booking Sequence is empty. The AI will not know how to move a lead to the next step.'],
+    ['prompt_hard_rules', 'Hard Rules are empty. Add at least the things it must never do.']];
+  for (const [k, m] of req) if (!txt(k)) out.push({ section: k, level: 'error', message: m });
+  const link = s.next_step_type === 'call' ? txt('calendar_link') : txt('next_step_link');
+  if (s.next_step_type !== 'human' && !link) out.push({ section: 'next_step', level: 'error', message: s.next_step_type === 'call' ? 'No booking link set. Add your calendar link in Settings.' : 'No link for the next step. Add the checkout or form link.' });
+  if (txt('prompt_booking') && !/confirm/i.test(txt('prompt_booking'))) out.push({ section: 'prompt_booking', level: 'warn', message: 'Booking Sequence never says how the lead confirms (screenshot, reply, order number).' });
+  if (txt('prompt_qualification') && !/\?/.test(txt('prompt_qualification'))) out.push({ section: 'prompt_qualification', level: 'warn', message: 'Qualification Sequence has no actual questions in it.' });
+  if (txt('prompt_hard_rules') && !/price|cost|fee|£|\$/i.test(txt('prompt_hard_rules'))) out.push({ section: 'prompt_hard_rules', level: 'warn', message: 'Hard Rules say nothing about prices. Decide whether the AI may quote them.' });
+  if (!txt('coach_name')) out.push({ section: 'coach_name', level: 'warn', message: 'No name set. The AI will not know what to call itself.' });
+  if (!txt('prompt_followup')) out.push({ section: 'prompt_followup', level: 'warn', message: 'Follow-up Instructions are empty. Quiet leads will only get exact Core Sequence messages, if any.' });
+  // Template placeholders look like "[your name]" / "[Programme name]" / "[free guide / content]".
+  // Deliberate script tokens like "[their words]" or "[VSL LINK]" are not placeholders.
+  const PLACEHOLDER = /\[(?:your|programme|course|agency|brand|who|what|outcome|topic|list|free|payment|resource|email|alternative|type|1-on-1|adults|businesses|revenue|monthly|audit|service|products|regions|policy|checkout|videos|format|complete|metric|if there|state it|the (?:result|engagement|level|checkout)|pre-revenue)[^\]]{0,80}\]/i;
+  for (const k of ['prompt_persona', 'prompt_offer', 'prompt_qualification', 'prompt_booking', 'prompt_routing']) if (PLACEHOLDER.test(txt(k))) out.push({ section: k, level: 'warn', message: 'Still has a [placeholder] from the template to fill in.' });
+  return out;
+}
+app.get('/api/script/checks', requireAccount, (req, res) => res.json(scriptChecks()));
+
+// ---------- onboarding ----------
+function onboardingSteps(req) {
+  const s = allSettings();
+  const ig = db.prepare('SELECT 1 FROM instagram_accounts WHERE account_id = ?').get(req.accountId);
+  const errors = scriptChecks().filter((c) => c.level === 'error');
+  const sections = ['prompt_persona', 'prompt_offer', 'prompt_qualification', 'prompt_booking', 'prompt_hard_rules'].every((k) => String(s[k] || '').trim());
+  const link = s.next_step_type === 'human' || !!String(s.next_step_type === 'call' ? s.calendar_link : s.next_step_link || '').trim();
+  return {
+    instagram: !!ig && (req.accountId === FIRST_ACCOUNT_ID ? igConfigured() : true),
+    template: !!String(s.template_id || '').trim() || sections,
+    sections,
+    next_step: link,
+    test_drive: !!String(s.test_drive_passed_at || '').trim(),
+    live: req.account.access_status === 'active' && s.kill_switch === '0' && errors.length === 0,
+  };
+}
+app.get('/api/onboarding', requireAccount, (req, res) => res.json({ steps: onboardingSteps(req), access_status: req.account.access_status }));
+app.post('/api/onboarding/go-live', requireAccount, requireActive, (req, res) => {
+  const errors = scriptChecks().filter((c) => c.level === 'error');
+  if (errors.length) return res.status(400).json({ error: errors[0].message, checks: errors });
+  setSetting('kill_switch', '0');
+  setSetting('default_mode', 'autopilot');
+  audit(req.accountId, req.user.id, 'go-live');
+  res.json({ ok: true });
+});
+
 app.get('/api/prompt-starter', requireAdmin, (req, res) => {
   res.json({ sections: (STARTER_PROMPT && STARTER_PROMPT.sections) || {}, name: (STARTER_PROMPT && STARTER_PROMPT.name) || '' });
 });
@@ -1297,7 +1390,7 @@ app.get('/api/voice/health', requireAdmin, async (req, res) => {
   res.json({ ffmpeg: await ffmpegAvailable() });
 });
 
-app.post('/api/voice', requireAdmin, upload.single('file'), async (req, res) => {
+app.post('/api/voice', requireAdmin, upload.single('file'), reenterAccount, async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No audio uploaded' });
   const CT_EXT = { 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/aac': 'aac', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3',
     'audio/ogg': 'ogg', 'audio/opus': 'opus', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/webm': 'webm', 'video/mp4': 'm4a' };
@@ -1339,7 +1432,7 @@ app.post('/api/calendly/webhook-setup', requireAdmin, async (req, res) => {
   if (!token) return res.status(400).json({ error: 'Add your Calendly API token first' });
   if (!PUBLIC_BASE) return res.status(400).json({ error: 'No public base URL configured (PUBLIC_BASE_URL / RAILWAY_PUBLIC_DOMAIN)' });
   try {
-    const out = await setupWebhook(token, PUBLIC_BASE + '/webhook/calendly');
+    const out = await setupWebhook(token, PUBLIC_BASE + (req.accountId === FIRST_ACCOUNT_ID ? '/webhook/calendly' : '/webhook/calendly/' + req.accountId));
     setSetting('calendly_webhook_id', out.id || '');
     setSetting('calendly_signing_key', out.signing_key || '');
     res.json({ ok: true });
@@ -1350,7 +1443,7 @@ app.post('/api/calendly/webhook-setup', requireAdmin, async (req, res) => {
 app.get('/api/knowledge', requireAdmin, (req, res) => {
   res.json({ documents: listDocuments() });
 });
-app.post('/api/knowledge', requireAdmin, upload.single('file'), async (req, res) => {
+app.post('/api/knowledge', requireAdmin, upload.single('file'), reenterAccount, async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   if (!isSupported(req.file.originalname)) {
     return res.status(400).json({ error: 'Unsupported type — use PDF, .docx, .txt or .md' });
@@ -2237,7 +2330,12 @@ async function fireCallBookedVsl(conv) {
   } catch (e) { console.error('[calendly] VSL send failed:', e.message); }
 }
 
-app.post('/webhook/calendly', (req, res) => {
+// The first account keeps the original URL (its Calendly subscription points
+// there); every other account gets /webhook/calendly/<account id>.
+app.post(['/webhook/calendly', '/webhook/calendly/:accountId'], (req, res) => {
+  const accountId = req.params.accountId || FIRST_ACCOUNT_ID;
+  if (!db.prepare('SELECT 1 FROM accounts WHERE id = ?').get(accountId)) return res.sendStatus(404);
+  runAs(accountId, () => {
   if (!verifyCalendlySignature(req)) return res.sendStatus(401); // reject forged/spoofed events
   res.sendStatus(200); // ack fast, then do the work (like the IG webhook)
   (async () => {
@@ -2272,6 +2370,7 @@ app.post('/webhook/calendly', (req, res) => {
       }
     } catch (e) { console.error('[calendly] webhook error:', e.message); }
   })();
+  });
 });
 
 /**
