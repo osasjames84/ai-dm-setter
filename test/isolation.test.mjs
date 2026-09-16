@@ -92,6 +92,36 @@ try {
     const list = (await jd.api('GET', '/api/admin/accounts')).json; assert.ok(!list.some((a) => a.id === me2.account.id));
     assert.equal((await jd.api('GET', '/api/conversations')).json.length, 1);
   });
+  await test('unread and seen', async () => {
+    await jd.api('POST', '/api/conversations/' + conv.id + '/lead-message', { text: 'hello?' });
+    let r = await jd.api('GET', '/api/conversations'); const row = r.json.find((c) => c.id === conv.id);
+    assert.equal(row.unread, 1); assert.ok(row.waiting_since);
+    assert.equal((await jd.api('POST', '/api/conversations/' + conv.id + '/seen')).status, 200);
+    r = await jd.api('GET', '/api/conversations'); assert.equal(r.json.find((c) => c.id === conv.id).unread, 0);
+  });
+  await test('prompt versions record on change, not on no-op saves', async () => {
+    const before = (await jd.api('GET', '/api/prompt/versions')).json.length;
+    await jd.api('PUT', '/api/settings', { prompt_persona: 'You are JD.' });
+    assert.equal((await jd.api('GET', '/api/prompt/versions')).json.length, before);
+    await jd.api('PUT', '/api/settings', { prompt_persona: 'You are JD, version two.' });
+    const list = (await jd.api('GET', '/api/prompt/versions')).json; assert.equal(list.length, before + 1); assert.equal(list[0].current, true);
+    const r = await jd.api('POST', '/api/prompt/versions/' + list[1].version + '/restore'); assert.equal(r.status, 200);
+    assert.equal((await jd.api('GET', '/api/settings')).json.settings.prompt_persona, 'You are JD.');
+  });
+  await test('analytics, health and admin overview answer', async () => {
+    assert.equal((await jd.api('GET', '/api/analytics?days=7')).json.window_days, 7);
+    assert.equal((await fetch(BASE + '/health').then((r) => r.json())).ok, true);
+    const o = await jd.api('GET', '/api/admin/accounts/acc_1/overview'); assert.equal(o.status, 200); assert.equal(o.json.account.id, 'acc_1'); assert.ok(Array.isArray(o.json.recent_conversations));
+  });
+  await test('events stream says hello', async () => {
+    const ac = new AbortController();
+    const r = await fetch(BASE + '/api/events', { headers: { Cookie: jd.cookie }, signal: ac.signal });
+    assert.equal(r.headers.get('content-type'), 'text/event-stream');
+    const reader = r.body.getReader(); const { value } = await reader.read(); assert.ok(new TextDecoder().decode(value).includes('event: hello')); ac.abort();
+  });
+  await test('meta data-deletion callback rejects an unsigned request', async () => {
+    const r = await fetch(BASE + '/webhook/meta/data-deletion', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'signed_request=abc.def' }); assert.equal(r.status, 400);
+  });
   await test('acc_1 cannot be deleted', async () => { const r = await jd.api('DELETE', '/api/account', { confirm: OWNER }); assert.equal(r.status, 400); });
   await test('PIN header still maps to acc_1', async () => { const r = await fetch(BASE + '/api/me', { headers: { 'x-admin-pin': '4242' } }); assert.equal(r.status, 200); assert.equal((await r.json()).account.id, 'acc_1'); });
 } catch (e) {

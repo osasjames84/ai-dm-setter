@@ -42,3 +42,16 @@ Shipped on `beta/backend`:
 - **Data**: `GET /api/account/export`, `DELETE /api/account` (confirm with the owner email), admin delete. The first account can never be deleted through the API.
 Verified: sandbox test drive on JD's real script (price hunter + warm lead). The warm lead passed clean. The price hunter run asked the money question before any pain question, which the grader flagged. That is the script being followed loosely by the model, not a code bug, and it is exactly what the test drive is for.
 Not done: nothing from the plan. Day 9 was shipped on day 2.
+
+## Days 11 to 17 — inbox realtime, versions, profiles, vision, analytics, support view, Meta prep
+Shipped on `beta/backend`:
+- **Unread and live updates** (E.1, E.6): last_seen_at, unread counts and waiting_since on the list; `POST /:id/seen`; `GET /api/events` server-sent events per account, bumped from message, draft, mode, stage and flag writes.
+- **Prompt versions** (E.8): every section change on save becomes a version; AI messages are stamped with the version they ran under; booked rate per version; restore records a new version.
+- **Per-lead profile** (E.9): Haiku keeps goal, blocker, budget signal, objections and facts per conversation, refreshed 20s after the lead speaks; the engine gets it in the system note so nothing is asked twice, even past the 40-message history cap.
+- **Vision on photos** (E.10) and **per-account transcription key** (E.11).
+- **Per-lead booking links** (E.12): utm_content on the Calendly link; bookings match on it before handle or name.
+- **Analytics** (E.15): outcomes, AI-only vs human-assisted conversion, per-version booked rate, lead messages by hour, median hours to booking, revenue estimate from client_value.
+- **Support view** (F.4): read-only overview of any account for the platform admin, no message text.
+- **Tests** (F.6): `test/pure.test.mjs` on the pure functions plus the isolation suite (27 checks). Found and fixed a real bug: Haiku usage was priced at Sonnet rates because the dated model id did not match the price table.
+- **Meta prep** (G.2): signed data-deletion callback, status page with confirmation code, `docs/META_REVIEW.md` checklist, `docs/RESTORE.md` runbook, `GET /health`.
+Left for JD: business verification and the screencast (G.1, G.3) need him; the Stripe epic stays out by his decision.

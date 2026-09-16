@@ -7,7 +7,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { PERSONAS, PERSONA_BY_ID } from './lib/personas.js';
 import { igConfigured, igVerifyWebhook, igParseInbound, igSendText, igSendAudio, igSendAction, igProfile, igStatus, igFetchHistory, onIgAuthError, setCredsResolver, igOauthConfigured, igAuthUrl, igCompleteOauth, igRefreshToken, igSubscribeApp } from './lib/instagram.js';
 import { initCrypto, encrypt, decrypt } from './lib/crypto.js';
-import { generateMove, varyMessage, applyOutboundFilter, stripDashes, buildSystemPrompt, anthropicClient } from './lib/engine.js';
+import { generateMove, varyMessage, applyOutboundFilter, stripDashes, buildSystemPrompt, anthropicClient, PROMPT_SECTIONS } from './lib/engine.js';
+import { openStream, bump as bumpEvent } from './lib/events.js';
+import { extractProfile, parseProfile } from './lib/profile.js';
+import { describeImage } from './lib/vision.js';
 import { startTestDrive, getJob as getTestDrive, listJobs as listTestDrives, shapeJob as shapeTestDrive, resolvePersonas } from './lib/testdrive.js';
 import { leadMove } from './lib/personas.js';
 import { reportUsage } from './lib/usage.js';
@@ -248,6 +251,10 @@ const SETTING_DEFAULTS = {
   timezone: '',                     // IANA name, e.g. Europe/London
   country: '',                      // ISO-2, e.g. GB
   test_drive_passed_at: '',         // ISO timestamp of the last passed test drive (onboarding step 5)
+  client_value: '',                 // average value of one sale (analytics revenue estimate), in the account currency
+  groq_api_key: '',                 // per-account Groq key for voice-note transcription (secret; server GROQ_API_KEY is the fallback)
+  lead_profiles: '1',               // keep a per-lead profile (goal, blocker, budget signal) and feed it to the AI
+  image_vision: '1',                // describe inbound photos so the AI can react to screenshots
 
   // ---- System state (not user-editable via the Settings form) ----
   ig_auth_error: '',                // JSON {at, detail} when the IG token is dead/revoked; '' when healthy (FEATURE 2)
@@ -296,7 +303,7 @@ if (!String(getSetting('prompt_voice') || '').trim() && String(getSetting('style
 }
 // Keys that must NEVER leave the server (the settings blob is polled by the
 // browser every 5s and rides in backups). The frontend gets a boolean instead.
-const SECRET_SETTING_KEYS = new Set(['calendly_token', 'calendly_signing_key', 'content_analysis']);
+const SECRET_SETTING_KEYS = new Set(['calendly_token', 'calendly_signing_key', 'content_analysis', 'groq_api_key']);
 /** Every catalogued setting, one query, memoised until the next setSetting(). */
 const allSettingsRaw = () => {
   const a = acc();
@@ -447,6 +454,7 @@ const allSettings = () => {
   const s = { ...raw };
   for (const k of SECRET_SETTING_KEYS) delete s[k];
   s.calendly_token_set = !!String(raw.calendly_token || '').trim();
+  s.groq_key_set = !!String(raw.groq_api_key || '').trim() || !!process.env.GROQ_API_KEY;
   return s;
 };
 // Starter script (prompts/starter.json): seeded ONCE into empty prompt sections
@@ -536,6 +544,35 @@ setCredsResolver(() => {
   }
   return null;
 });
+
+// ---------- prompt versions (E.8) ----------
+// Every save that changes a prompt section becomes a numbered version; AI
+// messages carry the version they were generated under, so the booked rate
+// per version can be compared. Restoring an old version records a new one.
+const PROMPT_KEYS = PROMPT_SECTIONS.map(([k]) => k);
+const _versionCache = new Map(); // accountId → latest version number
+function promptSectionsSnapshot() { const o = {}; for (const k of PROMPT_KEYS) o[k] = String(getSetting(k) || ''); return o; }
+function currentPromptVersion(accountId) {
+  if (!_versionCache.has(accountId)) _versionCache.set(accountId, db.prepare('SELECT MAX(version) v FROM prompt_versions WHERE account_id = ?').get(accountId)?.v || null);
+  return _versionCache.get(accountId);
+}
+/** Record a version when the sections differ from the latest one. Returns the row or null when unchanged. */
+function recordPromptVersion(userId = null, note = '') {
+  const a = currentAccountOrFirst('versions');
+  const sections = promptSectionsSnapshot();
+  if (!Object.values(sections).some((v) => v.trim())) return null;   // nothing written yet
+  const hash = crypto.createHash('sha256').update(JSON.stringify(sections)).digest('hex');
+  const latest = db.prepare('SELECT * FROM prompt_versions WHERE account_id = ? ORDER BY version DESC LIMIT 1').get(a);
+  if (latest && latest.hash === hash) return null;
+  const version = (latest?.version || 0) + 1;
+  db.prepare('INSERT INTO prompt_versions (account_id, version, hash, sections_json, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(a, version, hash, JSON.stringify(sections), String(note || '').slice(0, 200), userId, new Date().toISOString());
+  _versionCache.set(a, version);
+  bumpEvent(a, 'settings', null);
+  return db.prepare('SELECT * FROM prompt_versions WHERE account_id = ? AND version = ?').get(a, version);
+}
+// The first account's current script becomes version 1 on boot, once.
+if (!currentPromptVersion(FIRST_ACCOUNT_ID)) recordPromptVersion(null, 'initial');
 
 // Outbound punctuation cleanup is OPT-IN (Settings › AI Controls › Strip dashes).
 const cleanOutbound = (t) => (getSetting('strip_dashes') === '1' ? stripDashes(t) : String(t ?? ''));
@@ -751,10 +788,12 @@ const historyOf = (convId) =>
 
 /** Serialize a conversation row for the API (ints → bools where it reads better). */
 function shapeConv(c) {
+  const { profile_json, ...rest } = c;
   return {
-    ...c,
+    ...rest,
     needs_human: !!c.needs_human,
     false_positive: !!c.false_positive,
+    profile: parseProfile(profile_json),
   };
 }
 
@@ -767,10 +806,13 @@ function addMessage(convId, role, text, source, mid = null, att_type = null, att
   const at = toIso(createdAt) || nowIso();
   // OR IGNORE + the unique idx_msg_mid means a duplicate IG message id (echo of
   // our own send, a webhook retry, or a re-run history sync) is silently skipped.
-  const info = db.prepare('INSERT OR IGNORE INTO messages (conversation_id, role, text, source, mid, att_type, att_id, created_at, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(convId, role, text, source, mid, att_type, att_id, at, currentAccountOrFirst('addMessage'));
+  const accountId = currentAccountOrFirst('addMessage');
+  const version = role === 'setter' && source !== 'human' ? currentPromptVersion(accountId) : null;
+  const info = db.prepare('INSERT OR IGNORE INTO messages (conversation_id, role, text, source, mid, att_type, att_id, created_at, account_id, prompt_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(convId, role, text, source, mid, att_type, att_id, at, accountId, version);
   // Advance last_message_at but NEVER move it backward (matters for history backfill).
   if (info.changes) {
+    bumpEvent(accountId, 'message', convId);
     db.prepare('UPDATE conversations SET last_message_at = ? WHERE id = ? AND (last_message_at IS NULL OR last_message_at < ?)').run(at, convId, at);
   }
   return info.changes > 0;
@@ -789,6 +831,7 @@ function setStage(convId, stage) {
 function setStageInner(convId, stage) {
   const prev = getConv(convId)?.stage;
   db.prepare('UPDATE conversations SET stage = ? WHERE id = ?').run(stage, convId);
+  bumpEvent(currentAccountOrFirst('setStage'), 'conversation', convId);
   // Owner email (FEATURE 3) on a fresh call_booked — only on the transition INTO
   // it (prev !== stage) so re-setting the same stage doesn't re-notify. Fire-and-forget.
   if (stage === 'call_booked' && prev !== 'call_booked') {
@@ -875,6 +918,15 @@ const TEST_MARKER_RE = /dmsetter\s*test|just testing|\btest \d+\/\d+\b/i;
 // returns; without this the echo is stored as a human reply and resets the
 // max-2 autopilot counter. Entries expire on their own.
 const inFlightSends = new Map(); // external_id → expiry epoch ms
+/** Append utm_content=<conversation id> to every occurrence of the account's booking link. */
+function tagBookingLink(text, convId) {
+  const link = String(getSetting('calendar_link') || '').trim().replace(/\/+$/, '');
+  if (!link || !String(text).includes(link)) return text;
+  const tagged = link + (link.includes('?') ? '&' : '?') + 'utm_content=' + encodeURIComponent(convId);
+  // Replace the bare link only; a link already carrying utm_content is left alone.
+  return String(text).replace(new RegExp(escapeRe(link) + '(?![?&]utm_content=)', 'g'), tagged);
+}
+const escapeRe = (x) => String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 async function deliver(conv, text, source) {
   let sentMid = null;
   if (!accountActive(conv.account_id || currentAccountOrFirst('deliver'))) return { ok: false, reason: 'account not active' };
@@ -906,6 +958,8 @@ async function deliver(conv, text, source) {
       return { ok: true, deduped: true };
     }
   }
+  // E.12: tag the booking link with the conversation id so a Calendly booking matches exactly.
+  filtered.text = tagBookingLink(filtered.text, conv.id);
   if (conv.channel === 'instagram' && igConfigured() && conv.external_id) {
     // Instagram typing indicator: for AI/autopilot sends, mark the thread read,
     // show typing, then pause a length-scaled beat so the bubble is visible.
@@ -956,8 +1010,30 @@ async function deliverVoiceNote(conv, audioId, source, caption = '[voice note]')
   return { ok: true };
 }
 
+// E.9: per-lead profile, refreshed at most once per 20s per conversation after the lead speaks.
+const profileTimers = new Map();
+function scheduleProfileRefresh(convId) {
+  if (getSetting('lead_profiles') !== '1' || !anthropicClient()) return;
+  if (profileTimers.has(convId)) return;
+  const accountId = currentAccountOrFirst('profile');
+  const t = setTimeout(() => {
+    profileTimers.delete(convId);
+    runAs(accountId, async () => {
+      const conv = getConv(convId);
+      if (!conv) return;
+      const history = historyOf(convId).filter((m) => m.text && !/^\[(photo|voice note|video|attachment)\]$/.test(m.text));
+      if (history.filter((m) => m.role === 'lead').length < 2) return;   // nothing to profile yet
+      const next = await extractProfile(anthropicClient(), history, parseProfile(conv.profile_json));
+      if (next) { db.prepare('UPDATE conversations SET profile_json = ?, profile_at = ? WHERE id = ?').run(JSON.stringify(next), nowIso(), convId); bumpEvent(accountId, 'conversation', convId); }
+    }).catch(() => {});
+  }, process.env.FAST_TIMERS === '1' ? 500 : 20_000);
+  if (t.unref) t.unref();
+  profileTimers.set(convId, t);
+}
+
 /** A lead just spoke: reset the AI-send guardrail + clear any queued follow-up. */
 function onLeadMessage(convId) {
+  scheduleProfileRefresh(convId);
   const at = nowIso();
   // Also reset followup_count: a returning lead who previously got 2 nudges would
   // otherwise be at count=2 and get marked `dead` ~15s after the AI answers them.
@@ -998,6 +1074,7 @@ function storeDraftInner(convId, messages, stageSuggestion, needsHuman, reason) 
       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`)
     .run(convId, JSON.stringify(msgs), STAGES.includes(stageSuggestion) ? stageSuggestion : null,
       needsHuman ? 1 : 0, reason || '', nowIso(), currentAccountOrFirst('storeDraft'));
+  bumpEvent(currentAccountOrFirst('storeDraft'), 'draft', convId);
   return db.prepare('SELECT * FROM drafts WHERE id = ?').get(info.lastInsertRowid);
 }
 
@@ -1006,6 +1083,7 @@ function setNeedsHuman(convId, reason) {
   const r = String(reason || 'needs_human').slice(0, 300);
   db.prepare('UPDATE conversations SET needs_human = 1, needs_human_reason = ? WHERE id = ?')
     .run(r, convId);
+  bumpEvent(currentAccountOrFirst('setNeedsHuman'), 'conversation', convId);
   // Owner email (FEATURE 3) — throttled to once / 30 min per conversation so a
   // burst of flags on the same thread doesn't spam. Fire-and-forget.
   const last = needsHumanNotifiedAt.get(convId) || 0;
@@ -1018,7 +1096,7 @@ function setNeedsHuman(convId, reason) {
 
 /** Set a conversation's mode (scheduler drops autopilot → copilot on handoff). */
 function setMode(convId, mode) {
-  if (MODES.includes(mode)) db.prepare('UPDATE conversations SET mode = ? WHERE id = ?').run(mode, convId);
+  if (MODES.includes(mode)) { db.prepare('UPDATE conversations SET mode = ? WHERE id = ?').run(mode, convId); bumpEvent(currentAccountOrFirst('setMode'), 'conversation', convId); }
 }
 
 /** Count an autopilot/approved AI turn toward the max-2 guardrail. */
@@ -1215,6 +1293,34 @@ app.get('/api/admin/ops', requireAccount, requirePlatformAdmin, (req, res) => {
     last_backup: last ? path.basename(last) : null,
     accounts: db.prepare('SELECT access_status, COUNT(*) AS n FROM accounts GROUP BY access_status').all(),
     instagram_accounts: db.prepare('SELECT status, COUNT(*) AS n FROM instagram_accounts GROUP BY status').all(),
+  });
+});
+/** F.4: read-only support view of one account: status, script health, Instagram, recent threads (no message text). */
+app.get('/api/admin/accounts/:id/overview', requireAccount, requirePlatformAdmin, (req, res) => {
+  const id = String(req.params.id);
+  const acc = db.prepare('SELECT id, name, access_status, created_at FROM accounts WHERE id = ?').get(id);
+  if (!acc) return res.status(404).json({ error: 'Not found' });
+  runAs(id, () => {
+    const s = allSettings();
+    const ig = igRowFor(id);
+    const recent = db.prepare(`SELECT id, handle, stage, mode, needs_human, needs_human_reason, channel, last_message_at, created_at,
+        (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count
+      FROM conversations c WHERE account_id = ? ORDER BY last_message_at DESC NULLS LAST LIMIT 20`).all(id);
+    res.json({
+      account: acc,
+      users: db.prepare('SELECT id, email, role, last_login_at FROM users WHERE account_id = ?').all(id),
+      settings: { coach_name: s.coach_name, kill_switch: s.kill_switch, default_mode: s.default_mode, template_id: s.template_id, next_step_type: s.next_step_type, currency: s.currency, country: s.country, timezone: s.timezone, test_drive_passed_at: s.test_drive_passed_at },
+      script: { checks: scriptChecks(), version: currentPromptVersion(id), sections_filled: PROMPT_KEYS.filter((k) => String(s[k] || '').trim()).length, sections_total: PROMPT_KEYS.length },
+      instagram: ig ? { username: ig.username, status: ig.status, expires_at: ig.expires_at, last_error: ig.last_error, via: ig.token_enc ? 'oauth' : 'env' } : null,
+      counts: {
+        conversations: db.prepare('SELECT COUNT(*) c FROM conversations WHERE account_id = ?').get(id).c,
+        needs_human: db.prepare('SELECT COUNT(*) c FROM conversations WHERE account_id = ? AND needs_human = 1').get(id).c,
+        pending_drafts: db.prepare("SELECT COUNT(*) c FROM drafts WHERE account_id = ? AND status = 'pending'").get(id).c,
+        booked_30d: db.prepare("SELECT COUNT(DISTINCT conversation_id) c FROM stage_events WHERE account_id = ? AND stage = 'call_booked' AND at >= ?").get(id, new Date(Date.now() - 30 * 86400_000).toISOString()).c,
+      },
+      recent_conversations: recent.map((r) => ({ ...r, needs_human: !!r.needs_human })),
+      audit: db.prepare('SELECT action, detail, at FROM account_audit WHERE account_id = ? ORDER BY id DESC LIMIT 20').all(id),
+    });
   });
 });
 app.get('/api/admin/accounts', requireAccount, requirePlatformAdmin, (req, res) => {
@@ -1578,7 +1684,42 @@ app.put('/api/settings', requireAdmin, (req, res) => {
     setSetting(k, v);
   }
   maybeRefreshCalendly(); // pick up a new token / toggle immediately
-  res.json({ ok: true, settings: allSettings() });
+  const v = recordPromptVersion(req.user?.id || null);
+  res.json({ ok: true, settings: allSettings(), prompt_version: v ? v.version : currentPromptVersion(req.accountId) });
+});
+
+// ---------- prompt versions (E.8) ----------
+function versionStats(accountId, version) {
+  const ai_messages = db.prepare('SELECT COUNT(*) c FROM messages WHERE account_id = ? AND prompt_version = ?').get(accountId, version).c;
+  const conversations = db.prepare('SELECT COUNT(DISTINCT conversation_id) c FROM messages WHERE account_id = ? AND prompt_version = ?').get(accountId, version).c;
+  const booked = db.prepare(`SELECT COUNT(DISTINCT m.conversation_id) c FROM messages m
+      JOIN stage_events e ON e.conversation_id = m.conversation_id AND e.stage IN ('call_booked', 'sale')
+      WHERE m.account_id = ? AND m.prompt_version = ? AND e.at >= (SELECT MIN(created_at) FROM messages x WHERE x.conversation_id = m.conversation_id AND x.prompt_version = ?)`).get(accountId, version, version).c;
+  return { ai_messages, conversations, booked, booked_rate: conversations ? Math.round((booked / conversations) * 1000) / 10 : null };
+}
+app.get('/api/prompt/versions', requireAccount, (req, res) => {
+  const rows = db.prepare('SELECT id, version, note, created_by, created_at FROM prompt_versions WHERE account_id = ? ORDER BY version DESC').all(req.accountId);
+  const current = currentPromptVersion(req.accountId);
+  res.json(rows.map((r) => ({ ...r, current: r.version === current, ...versionStats(req.accountId, r.version) })));
+});
+app.get('/api/prompt/versions/:version', requireAccount, (req, res) => {
+  const r = db.prepare('SELECT * FROM prompt_versions WHERE account_id = ? AND version = ?').get(req.accountId, Number(req.params.version));
+  if (!r) return res.status(404).json({ error: 'Not found' });
+  res.json({ id: r.id, version: r.version, note: r.note, created_by: r.created_by, created_at: r.created_at, sections: parseJ(r.sections_json, {}), ...versionStats(req.accountId, r.version) });
+});
+app.put('/api/prompt/versions/:version', requireAccount, (req, res) => {
+  const info = db.prepare('UPDATE prompt_versions SET note = ? WHERE account_id = ? AND version = ?').run(String(req.body?.note || '').slice(0, 200), req.accountId, Number(req.params.version));
+  if (!info.changes) return res.status(404).json({ error: 'Not found' });
+  res.json({ ok: true });
+});
+app.post('/api/prompt/versions/:version/restore', requireAccount, (req, res) => {
+  const r = db.prepare('SELECT * FROM prompt_versions WHERE account_id = ? AND version = ?').get(req.accountId, Number(req.params.version));
+  if (!r) return res.status(404).json({ error: 'Not found' });
+  const sections = parseJ(r.sections_json, {});
+  for (const k of PROMPT_KEYS) setSetting(k, String(sections[k] || ''));
+  const v = recordPromptVersion(req.user?.id || null, `restored from v${r.version}`);
+  audit(req.accountId, req.user?.id, 'prompt-restore', `v${r.version}`);
+  res.json({ ok: true, version: v ? v.version : currentPromptVersion(req.accountId), settings: allSettings() });
 });
 
 /**
@@ -1721,7 +1862,9 @@ app.get('/api/conversations', requireAdmin, (req, res) => {
     SELECT c.*,
       (SELECT text FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_text,
       EXISTS(SELECT 1 FROM drafts d WHERE d.conversation_id = c.id AND d.status = 'pending') AS pending_draft,
-      (SELECT MIN(created_at) FROM drafts d WHERE d.conversation_id = c.id AND d.status = 'pending') AS oldest_pending_draft_at
+      (SELECT MIN(created_at) FROM drafts d WHERE d.conversation_id = c.id AND d.status = 'pending') AS oldest_pending_draft_at,
+      (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.role = 'lead' AND (c.last_seen_at IS NULL OR m.created_at > c.last_seen_at)) AS unread,
+      (SELECT role FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_role
     FROM conversations c
     WHERE c.account_id = ?
     ORDER BY c.last_message_at DESC NULLS LAST, c.created_at DESC
@@ -1750,10 +1893,22 @@ app.get('/api/conversations', requireAdmin, (req, res) => {
       const untilMs = new Date(r.call_time).getTime() - now;
       if (untilMs >= 0 && untilMs <= 48 * 3600_000) attention += 25;
     }
-    return { ...shapeConv(r), pending_draft: !!r.pending_draft, attention };
+    const { last_role, ...row } = r;
+    // waiting_since: the lead spoke last and nobody has answered yet.
+    const waiting_since = last_role === 'lead' ? r.last_message_at : null;
+    return { ...shapeConv(row), pending_draft: !!r.pending_draft, attention, unread: Number(r.unread) || 0, waiting_since };
   });
   res.json(shaped);
 });
+/** The owner opened the thread: clear its unread count. */
+app.post('/api/conversations/:id/seen', requireAdmin, (req, res) => {
+  const conv = getConv(req.params.id);
+  if (!conv) return res.status(404).json({ error: 'Not found' });
+  db.prepare('UPDATE conversations SET last_seen_at = ? WHERE id = ?').run(nowIso(), conv.id);
+  res.json({ ok: true });
+});
+/** Live updates: one event per change ({type: message|draft|conversation|settings, id}); the page refetches. */
+app.get('/api/events', requireAccount, (req, res) => openStream(req.accountId, req, res));
 
 app.get('/api/conversations/:id', requireAdmin, (req, res) => {
   const conv = getConv(req.params.id);
@@ -2028,6 +2183,39 @@ app.post('/api/drafts/:id/discard', requireAdmin, (req, res) => {
 });
 
 // ---------- stats ----------
+app.get('/health', (req, res) => {
+  try { db.prepare('SELECT 1').get(); res.json({ ok: true, uptime_s: Math.round(process.uptime()) }); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+/** E.15: outcomes, AI-only vs human-assisted conversion, per-version booked rate, reply times, revenue estimate. */
+app.get('/api/analytics', requireAdmin, (req, res) => {
+  const A = req.accountId;
+  const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+  const since = new Date(Date.now() - days * 86400_000).toISOString();
+  const convs = db.prepare('SELECT id, stage, kw_triggered, created_at, channel FROM conversations WHERE account_id = ? AND created_at >= ?').all(A, since);
+  const ids = new Set(convs.map((c) => c.id));
+  const humanTouched = new Set(db.prepare("SELECT DISTINCT conversation_id FROM messages WHERE account_id = ? AND role = 'setter' AND source = 'human' AND created_at >= ?").all(A, since).map((r) => r.conversation_id));
+  const bookedIds = new Set(db.prepare("SELECT DISTINCT conversation_id FROM stage_events WHERE account_id = ? AND stage IN ('call_booked','sale') AND at >= ?").all(A, since).map((r) => r.conversation_id));
+  const split = { ai_only: { conversations: 0, booked: 0 }, human_assisted: { conversations: 0, booked: 0 } };
+  for (const c of convs) { const k = humanTouched.has(c.id) ? 'human_assisted' : 'ai_only'; split[k].conversations++; if (bookedIds.has(c.id)) split[k].booked++; }
+  for (const k of Object.keys(split)) split[k].rate = split[k].conversations ? Math.round((split[k].booked / split[k].conversations) * 1000) / 10 : null;
+  const outcomes = {};
+  for (const st of ['call_booked', 'sale', 'routed', 'dead']) outcomes[st] = db.prepare('SELECT COUNT(DISTINCT conversation_id) c FROM stage_events WHERE account_id = ? AND stage = ? AND at >= ?').get(A, st, since).c;
+  const byHour = new Array(24).fill(0);
+  for (const r of db.prepare("SELECT created_at FROM messages WHERE account_id = ? AND role = 'lead' AND created_at >= ? LIMIT 50000").all(A, since)) { const h = new Date(r.created_at).getHours(); if (h >= 0 && h < 24) byHour[h]++; }
+  const gaps = db.prepare("SELECT c.created_at AS a, e.at AS b FROM stage_events e JOIN conversations c ON c.id = e.conversation_id WHERE e.account_id = ? AND e.stage = 'call_booked' AND e.at >= ?").all(A, since)
+    .map((r) => (Date.parse(r.b) - Date.parse(r.a)) / 3600_000).filter((x) => Number.isFinite(x) && x >= 0).sort((x, y) => x - y);
+  const medianHours = gaps.length ? Math.round(gaps[Math.floor(gaps.length / 2)] * 10) / 10 : null;
+  const versions = db.prepare('SELECT version, note, created_at FROM prompt_versions WHERE account_id = ? ORDER BY version DESC LIMIT 10').all(A).map((v) => ({ ...v, ...versionStats(A, v.version) }));
+  const clientValue = Number(getSetting('client_value')) || 0;
+  const sales = outcomes.sale;
+  res.json({
+    window_days: days,
+    leads: { total: convs.length, keyword: convs.filter((c) => c.kw_triggered).length, instagram: convs.filter((c) => c.channel === 'instagram').length, simulator: convs.filter((c) => c.channel === 'sim').length },
+    outcomes, conversion: split, by_version: versions, lead_messages_by_hour: byHour, median_hours_to_booking: medianHours,
+    revenue: { sales, client_value: clientValue, currency: getSetting('currency') || 'GBP', estimated: Math.round(sales * clientValue * 100) / 100 },
+  });
+});
 app.get('/api/stats', requireAdmin, (req, res) => {
   const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
   const weekAgo = new Date(Date.now() - 7 * 86400_000).toISOString();
@@ -2273,7 +2461,39 @@ app.get('/privacy', (req, res) => res.type('html').send(legalPage('Privacy Polic
   ['Retention and deletion', 'Conversations are retained to provide message history. To request deletion of your data, see the Data Deletion instructions at /data-deletion. Data is also removed if the Instagram connection is disconnected.'],
   ['Contact', CONTACT],
 ])));
+/**
+ * Meta's Data Deletion Request callback (G.2). Meta POSTs signed_request when an
+ * Instagram user removes the app; we delete every conversation with that user id
+ * across accounts and answer with a status URL + confirmation code, as Meta requires.
+ */
+function parseSignedRequest(sr, secret) {
+  const [sig, payload] = String(sr || '').split('.', 2);
+  if (!sig || !payload || !secret) return null;
+  const expected = crypto.createHmac('sha256', secret).update(payload).digest();
+  const given = Buffer.from(sig.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return null;
+  try { return JSON.parse(Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')); } catch { return null; }
+}
+app.post('/webhook/meta/data-deletion', express.urlencoded({ extended: false }), (req, res) => {
+  const data = parseSignedRequest(req.body?.signed_request, process.env.IG_APP_SECRET);
+  if (!data || !data.user_id) return res.status(400).json({ error: 'bad signed_request' });
+  const uid = String(data.user_id);
+  const code = crypto.randomBytes(6).toString('hex');
+  const convs = db.prepare("SELECT id, account_id FROM conversations WHERE channel = 'instagram' AND external_id = ?").all(uid);
+  tx(() => {
+    for (const c of convs) {
+      db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(c.id);
+      db.prepare('DELETE FROM drafts WHERE conversation_id = ?').run(c.id);
+      db.prepare('DELETE FROM stage_events WHERE conversation_id = ?').run(c.id);
+      db.prepare('DELETE FROM conversations WHERE id = ?').run(c.id);
+    }
+  });
+  audit(FIRST_ACCOUNT_ID, null, 'meta-data-deletion', `user ${uid}: ${convs.length} conversation(s) removed, code ${code}`);
+  console.log(`[meta] data deletion for user: ${convs.length} conversation(s) removed (code ${code})`);
+  res.json({ url: `${PUBLIC_URL()}/data-deletion?code=${code}`, confirmation_code: code });
+});
 app.get('/data-deletion', (req, res) => res.type('html').send(legalPage('Data Deletion', [
+  ...(req.query.code ? [['Status of your request', `Deletion request ${String(req.query.code).replace(/[^a-f0-9]/gi, '').slice(0, 16)} has been completed. Your conversations with this Instagram account were removed.`]] : []),
   ['Request deletion of your data', 'If you have messaged this Instagram business account and want your data removed, you can request deletion at any time.'],
   ['How', 'Reply to the conversation on Instagram asking for your data to be deleted, or email the address listed on the associated Meta app. The account owner will remove your conversation and all associated data from the system.'],
   ['Automatic removal', 'Your data is also removed if the account owner disconnects the Instagram integration.'],
@@ -2319,12 +2539,16 @@ async function ingestMessage(conv, ev) {
     if (kind === 'audio') {
       text = '';
       if (saved) {
-        try { text = (await transcribeAudio(attachmentPath(saved.id))) || ''; }
+        try { text = (await transcribeAudio(attachmentPath(saved.id), getSetting('groq_api_key'))) || ''; }
         catch (e) { console.error('transcribe failed:', e.message); }
       }
       if (!text) text = '[voice note]';
     } else {
       text = kind === 'image' ? '[photo]' : kind === 'video' ? '[video]' : '[attachment]';
+      // E.10: describe a lead's photo so the AI can react to a booking or payment screenshot.
+      if (kind === 'image' && role === 'lead' && saved && getSetting('image_vision') === '1') {
+        text = (await describeImage(anthropicClient(), attachmentPath(saved.id), att.type)) || text;
+      }
     }
     addMessage(conv.id, role, text, 'human', useMid(), kind, saved ? saved.id : null);
   }
@@ -2532,7 +2756,10 @@ function convByName(name) {
  *  (b) exact case-insensitive invitee name vs display_name
  *  (c) no match → null (caller notifies; we never create a conversation)
  */
-function matchBooking({ name, qAndA }) {
+function matchBooking({ name, qAndA, tracking }) {
+  // (0) our own utm_content tag carries the conversation id: exact match.
+  const tagged = String(tracking?.utm_content || '').trim();
+  if (tagged) { const hit = getConv(tagged); if (hit) return hit; }
   for (const qa of Array.isArray(qAndA) ? qAndA : []) {
     if (/instagram|@|ig handle/i.test(String(qa?.question || ''))) {
       const hit = convByHandle(qa?.answer);
@@ -2582,7 +2809,7 @@ app.post(['/webhook/calendly', '/webhook/calendly/:accountId'], (req, res) => {
         const startTime = toIso(payload?.scheduled_event?.start_time);
         const name = payload?.name || '';
         const qAndA = payload?.questions_and_answers || [];
-        const conv = matchBooking({ name, qAndA });
+        const conv = matchBooking({ name, qAndA, tracking: payload?.tracking });
         if (!conv) {
           notify('Booking could not be matched', `A Calendly booking came in for "${name || 'unknown'}" but no conversation matched by IG handle or name.`).catch(() => {});
           console.warn('[calendly] invitee.created: no conversation match for', name || '(no name)');
@@ -2594,7 +2821,7 @@ app.post(['/webhook/calendly', '/webhook/calendly/:accountId'], (req, res) => {
       } else if (event === 'invitee.canceled') {
         const name = payload?.name || '';
         const qAndA = payload?.questions_and_answers || [];
-        const conv = matchBooking({ name, qAndA });
+        const conv = matchBooking({ name, qAndA, tracking: payload?.tracking });
         if (!conv) {
           console.warn('[calendly] invitee.canceled: no conversation match for', name || '(no name)');
           return;

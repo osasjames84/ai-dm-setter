@@ -196,3 +196,37 @@ GET    /api/admin/ops                 → { sentry, offsite_backups, log_format,
 
 Server env (all optional): IG_APP_ID, IG_APP_SECRET (Instagram login + signature checks), TOKEN_ENC_KEY (64 hex chars; auto-generated into DATA_DIR/.token_key otherwise), SENTRY_DSN, LOG_FORMAT=json, BACKUP_S3_BUCKET / BACKUP_S3_ACCESS_KEY / BACKUP_S3_SECRET_KEY (+ BACKUP_S3_ENDPOINT, BACKUP_S3_REGION, BACKUP_S3_PREFIX).
 `npm test` boots the server on a scratch folder and runs the tenant isolation suite.
+
+## Days 11 to 17 contract notes (shipped on beta/backend)
+
+```
+Inbox
+GET  /api/conversations               rows gain: unread (int, lead messages since last_seen_at), waiting_since (iso|null: lead spoke last, nobody answered)
+POST /api/conversations/:id/seen      → { "ok" }
+GET  /api/events                      server-sent events, cookie auth. "hello" on open, then
+                                      event: change  data: { "type": "message"|"draft"|"conversation"|"settings", "id": conversation id|null }
+                                      Refetch what the page shows on each event; keep the poll as a fallback at 30s when the stream is open.
+Conversation rows carry "profile": { goal, blocker, budget_signal, objections[], facts[], next_step_status, updated_at } | null   (E.9; show it in the prospect panel)
+
+Prompt versions (E.8)
+PUT  /api/settings                    response gains "prompt_version": n   (a save that changes any section records a new version)
+GET  /api/prompt/versions             → [ { id, version, note, created_by, created_at, current, ai_messages, conversations, booked, booked_rate } ]
+GET  /api/prompt/versions/:version    → { …, "sections": { prompt_persona … } }
+PUT  /api/prompt/versions/:version    { "note" } → { "ok" }
+POST /api/prompt/versions/:version/restore → { "ok", "version", "settings" }   (records a new version "restored from vN")
+
+Analytics (E.15)
+GET  /api/analytics?days=30           → { window_days, leads: { total, keyword, instagram, simulator }, outcomes: { call_booked, sale, routed, dead },
+                                          conversion: { ai_only: { conversations, booked, rate }, human_assisted: {…} }, by_version: [...],
+                                          lead_messages_by_hour: [24 ints], median_hours_to_booking, revenue: { sales, client_value, currency, estimated } }
+New settings: client_value (number as string), groq_api_key (secret; settings expose groq_key_set), lead_profiles "1"|"0", image_vision "1"|"0"
+
+Admin (F.4)
+GET  /api/admin/accounts/:id/overview → { account, users, settings (subset), script: { checks, version, sections_filled, sections_total }, instagram, counts, recent_conversations (no text), audit }
+
+Other
+GET  /health                          → { ok, uptime_s }
+POST /webhook/meta/data-deletion      Meta's data deletion callback (signed_request) — configure its URL in the Meta app
+Booking links the AI sends carry ?utm_content=<conversation id>; Calendly bookings match on it first (E.12).
+Inbound photos from leads arrive as "[photo: one-line description]" when image_vision is on (E.10).
+```
