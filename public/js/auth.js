@@ -10,7 +10,7 @@ function showLogin(message = '') {
   $('#login-sent').classList.add('hidden');
   $('#login-err').textContent = message;
   $('#login-retry').classList.add('hidden');
-  for (const id of ['dash-page','view-messages','drafts-page','prompt-page','content-page','settings-page']) {
+  for (const id of ['onboarding-page','dash-page','view-messages','drafts-page','prompt-page','content-page','settings-page']) {
     const el = document.getElementById(id); if (el) el.replaceChildren();
   }
   $('#toasts').replaceChildren();
@@ -18,7 +18,7 @@ function showLogin(message = '') {
   $('#login-email').focus();
 }
 async function logout() {
-  if ((state.scriptDirty || state.settingsDirty) && !confirm('Log out and leave unsaved changes?')) return;
+  if ((state.scriptDirty || state.settingsDirty || state.onboardingDirty) && !confirm('Log out and leave unsaved changes?')) return;
   const button = $('#logout-btn'); button.disabled = true;
   try {
     await api('/api/logout', { method: 'POST' });

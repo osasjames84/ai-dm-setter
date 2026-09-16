@@ -29,7 +29,7 @@ async function loadSettings() {
 }
 
 window.addEventListener('beforeunload', (e) => {
-  if (state.scriptDirty || state.settingsDirty) { e.preventDefault(); e.returnValue = ''; }
+  if (state.scriptDirty || state.settingsDirty || state.onboardingDirty) { e.preventDefault(); e.returnValue = ''; }
 });
 
 /* ============================== poll loop ============================== */
@@ -37,7 +37,7 @@ setInterval(() => {
   if (!state.authenticated || document.hidden || $('#app').classList.contains('hidden')) return;
   // Never overwrite the settings baseline while the owner is mid-edit on a page
   // that renders from it — a save from another tab would silently replace his work.
-  const editing = (state.route === 'prompt' && state.scriptDirty) || (state.route === 'settings' && state.settingsDirty);
+  const editing = state.route === 'onboarding' || (state.route === 'prompt' && state.scriptDirty) || (state.route === 'settings' && state.settingsDirty);
   if (!editing) loadSettings();
   loadIdentity().catch((err) => { if (err.status === 401 && state.authenticated) showLogin('Your session expired. Request a new sign-in link.'); });
   refreshBadge();
@@ -54,7 +54,7 @@ async function boot() {
   loadIgStatus(); // fire-and-forget: populates state.igStatus so the sidebar dot can show app-wide
   messagesScaffold();
   renderNav();
-  go('dashboard');
+  go(state.me?.onboarding_complete ? 'dashboard' : 'onboarding');
 }
 /* ============================== theme (light/dark) ============================== */
 function renderThemeToggle() {

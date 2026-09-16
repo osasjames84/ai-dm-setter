@@ -86,8 +86,7 @@ const ACC = {
   orange: { border: 'rgba(245,158,11,.32)',  bg: 'rgba(245,158,11,.05)',  fg: 'var(--orange)' },
   indigo: { border: 'rgba(109,109,240,.32)', bg: 'rgba(90,103,242,.05)',  fg: '#8b8bf5' },
 };
-const audioBtns = '<button type="button" class="mini-btn" data-audio="record">' + icon('mic', 15) + 'Record</button>' +
-  '<button type="button" class="mini-btn" data-audio="upload">' + icon('upload', 15) + 'Upload</button>';
+const audioBtns = '<span class="set-help">Audio replies are not available here.</span>';
 
 /* Custom voice-note player: play/pause + a scrubber that fills and a countdown of
    time remaining, so you can see (and scrub) a recorded clip. Init'd by initVnPlayers. */
@@ -268,9 +267,9 @@ function renderPrompt() {
   initScriptState(s);
   const page = $('#prompt-page');
   page.innerHTML = '<div class="prompt-grid"><div class="script-workspace">' +
-    '<div class="workspace-head"><h1>AI Script</h1><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-ghost btn-sm" id="script-starter" title="Fill any empty sections from the starter script (nothing you wrote is touched)">Fill empty sections</button><button class="btn btn-primary is-saved" id="script-save">Saved</button></div></div>' +
-    '<div class="script-scroll"><div class="script-intro">Everything the AI says comes from what you write here. No script, sequence, pitch or personality is built in.</div>' +
-    '<div class="script-col" id="script-col"></div></div></div>' +
+    '<div class="workspace-head"><h1>AI Script</h1><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary is-saved" id="script-save">Saved</button></div></div>' +
+    '<div class="script-scroll"><div class="script-intro">Everything the AI says comes from what you write here. Review every section before enabling automation.</div>' +
+    '<div id="script-tools"></div><div class="script-col" id="script-col"></div></div></div>' +
 
     '<div class="preview-panel">' +
     '<div class="preview-head"><div class="preview-head-row"><div class="icon-chip" style="width:36px;height:36px;background:var(--indigo);color:#fff">' + icon('spark', 16) + '</div>' +
@@ -286,19 +285,6 @@ function renderPrompt() {
   renderScriptWorkspace();
 
   $('#script-save').addEventListener('click', saveScript);
-  $('#script-starter').addEventListener('click', async () => {
-    syncScriptFromDom();
-    let starter; try { starter = await api('/api/prompt-starter'); } catch (e) { toast(e.message, 'err'); return; }
-    const sections = (starter && starter.sections) || {};
-    let n = 0;
-    for (const [k, v] of Object.entries(sections)) {
-      if (typeof state.script[k] === 'string' && !state.script[k].trim() && String(v || '').trim()) { state.script[k] = String(v); n++; }
-    }
-    if (!n) { toast('Every section already has something in it — nothing changed'); return; }
-    renderScriptWorkspace();
-    markScriptDirty();
-    toast('Filled ' + n + ' empty section' + (n === 1 ? '' : 's') + ' — review, then Save');
-  });
   state.scriptDirty = false;
   const scriptCol = $('#script-col');
   scriptCol.addEventListener('input', markScriptDirty);
@@ -307,6 +293,7 @@ function renderPrompt() {
   $('#pv-send').addEventListener('click', sendPreview);
   $('#pv-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendPreview(); });
   renderPreviewMsgs();
+  mountScriptTools();
 }
 
 /* Pull every live DOM value into state.script (called before any re-render). */
@@ -355,7 +342,7 @@ function renderScriptWorkspace() {
     '<div class="kb-list" id="kb-list"><div class="kb-empty">No documents yet.</div></div>');
 
   // 3. Your prompt — every section is optional and written entirely by the owner.
-  const ta = (key, rows, ph) => '<textarea data-sk="' + key + '" rows="' + rows + '" placeholder="' + esc(ph) + '">' + esc(sc[key]) + '</textarea>';
+  const ta = (key, rows, ph) => '<textarea data-sk="' + key + '" rows="' + rows + '" placeholder="' + esc(ph) + '">' + esc(sc[key]) + '</textarea><div data-check-for="' + key + '"></div>';
   const inp = (key, ph) => '<input data-sk="' + key + '" placeholder="' + esc(ph) + '" value="' + esc(sc[key]) + '">';
   const persona = scriptCard('persona', 'Character & Personality', 'Who the AI is when it texts — attitude, personality, how it treats people', 'wand', ACC.purple,
     '<div class="field-label">Personality</div>' +
@@ -372,11 +359,11 @@ function renderScriptWorkspace() {
     ta('prompt_voice', 6, 'Describe how you text: tone, message length, casing, punctuation, emoji use, anything to avoid.'));
   const qual = scriptCard('qual', 'Qualification Sequence', 'How the AI qualifies a lead — your questions, your order, your criteria', 'target', ACC.orange,
     ta('prompt_qualification', 8, 'Describe how a lead should be qualified: what to ask, in what order, what makes someone qualified or not, and what to do in each case.'));
-  const book = scriptCard('book', 'Booking Sequence', 'How the AI moves a qualified lead to a booked call', 'calendar', ACC.pink,
-    ta('prompt_booking', 8, 'Describe how to bring up the call, what to send, how to confirm it, and how to handle hesitation.'));
-  const routing = scriptCard('routing', 'Routing & Resources', 'Who gets booked, who gets a resource instead, and the links the AI is allowed to send', 'bolt', ACC.indigo,
+  const book = scriptCard('book', 'Next-step sequence', 'How the AI guides a qualified customer to the next step', 'calendar', ACC.pink,
+    ta('prompt_booking', 8, 'Describe the next step: book, buy, fill out a form, or speak to a person. Explain how to offer and confirm it.'));
+  const routing = scriptCard('routing', 'Routing & Resources', 'Who should take the next step, who needs a resource, and which links the AI may send', 'bolt', ACC.indigo,
     '<div class="field-label">Routing Rules</div>' +
-    ta('prompt_routing', 5, 'Describe who gets booked, who gets sent to a guide or community instead, and when.') +
+    ta('prompt_routing', 5, 'Describe who should take the next step, who needs another resource, and when.') +
     '<div class="field-label">Bookable call slots</div>' + inp('call_slots', 'e.g. Mon–Fri 10am–6pm UK, or leave blank') +
     '<div class="field-label">Free guide link</div>' + inp('guide_link', 'https://…') +
     '<div class="field-label">Community link</div>' + inp('community_link', 'https://…') +
@@ -432,7 +419,7 @@ function renderScriptWorkspace() {
       '</div>';
   }).join('');
   const audioArsenal = scriptCard('audio', 'Audio Arsenal',
-    'When your phrase shows up — in the AI\'s reply <b>or</b> in what the lead sends (e.g. they DM <b>COACH</b>) — the first time it comes up they hear your voice note. After that, just text.',
+    'When your phrase shows up — in the AI\'s reply <b>or</b> in what the lead sends (e.g. they DM <b>INFO</b>) — the first time it comes up they hear your voice note. After that, just text.',
     'volume', ACC.red,
     '<div class="section-toprow" style="justify-content:flex-end"><button type="button" class="mini-btn add-btn" data-add="arsenal">' + icon('plus', 14) + 'Add</button></div>' +
     '<div class="arsenal-list">' + arsRows + '</div>');
@@ -442,7 +429,7 @@ function renderScriptWorkspace() {
     const showX = sc.manual_voice.length > 1;
     return '<div class="arsenal-entry' + (showX ? ' has-x' : '') + '">' +
       '<div class="field-label">Label</div>' +
-      '<input data-manual="1" data-mi="' + i + '" placeholder="e.g. Coaching pitch, Pricing" value="' + esc(m.label) + '">' +
+      '<input data-manual="1" data-mi="' + i + '" placeholder="e.g. Offer introduction, Pricing" value="' + esc(m.label) + '">' +
       '<div class="audio-reply-row"><span class="audio-lbl">' + icon('mic', 14) + 'Audio:</span>' + audioBtns + '</div>' +
       (showX ? '<button type="button" class="row-x entry-x" data-manual-x="' + i + '">' + icon('x', 15) + '</button>' : '') +
       '</div>';
@@ -483,7 +470,7 @@ function renderScriptWorkspace() {
     '<div class="kw-callout flow"><span class="co-ic">' + icon('bolt', 15) + '</span><div class="co-body">After this message, the AI follows <b>your prompt sections above</b> and any Core Sequence follow-ups you set below</div></div>';
   const keyword = '<div class="kw-toplabel"><span class="kw-dot"></span>Story/Reel Keyword Trigger</div>' +
     scriptCard('keyword', 'Keyword Trigger',
-      'Triggered when prospect responds with your keyword (e.g., FIT, COACH) • Mode: Not configured',
+      'Triggered when prospect responds with your keyword (e.g., INFO, START) • Mode: Not configured',
       null, ACC.orange, kwBody, { dot: true });
 
   // 8. Turn On AI When I Send…
@@ -522,10 +509,10 @@ function renderScriptWorkspace() {
   const coreSeq = '<div class="core-seq-wrap"><div class="core-seq-head">Core Sequences</div>' +
     seq('seqlead', 'seq_lead', 'Lead Sequence', 'Your exact follow-ups for leads who go quiet before qualifying (empty = none)') +
     seq('seqqual', 'seq_qualification', 'Qualification Sequence', 'Your exact follow-ups for leads who go quiet while qualifying (empty = none)') +
-    seq('seqbook', 'seq_booking', 'Booking Sequence', 'Your exact follow-ups for leads who go quiet after a booking is proposed (empty = none)') +
+    seq('seqbook', 'seq_booking', 'Next-step sequence', 'Your exact follow-ups for leads who go quiet after a booking is proposed (empty = none)') +
     callBooked + '</div>';
 
-  col.innerHTML = coach + persona + offer + voice + qual + book + routing + objections + followup + rules + custom + kb + reaction + audioArsenal + manualVoice + keyword + aiOn + coreSeq;
+  col.innerHTML = coach + persona + offer + voice + qual + book + routing + objections + followup + rules + custom + kb + audioArsenal + keyword + aiOn + coreSeq;
   bindScriptEvents(col);
 }
 
@@ -869,6 +856,7 @@ async function saveScript(e) {
     state.settings = Object.assign({}, state.settings, { settings: out.settings });
     setScriptSaved();
     renderAccount();
+    loadScriptChecks($('#script-col'),$('#prompt-check-status'));
   } catch (err) { toast(err.message, 'err'); btn.textContent = prev; }
   finally { btn.disabled = false; }
 }

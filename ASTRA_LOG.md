@@ -32,3 +32,10 @@
 - Tested against beta/backend 5c5d29d in isolated /tmp integration on port 5330: request/consume link, reload, logout, new pending account, paused readable inbox; no captured browser errors/warnings.
 - API transport checks passed for cookies/no PIN, anonymous versus expired sessions and stale-response rejection. Live mail/AI/Instagram disabled; test links consumed from local backend logs.
 - Backend files unchanged; integration notes in CONTRACT_REQUESTS.md cover PIN fallback, email failure/token logging and actual admin payload differences. Frontend must ship with the session backend.
+
+## 2026-09-16: days three to five frontend
+- Continued generic wording/control cleanup; removed inactive reaction/manual-voice cards and fake sequence audio buttons while retaining supported audio tools. Original theme and AI amber rings preserved.
+- Added safe fill-empty template picker, saved-script checks and read-only assembled prompt panel. Missing backend endpoints show explicit unavailable states.
+- Added five-step setup shell, server-derived progress/resume, template application and five-section editor with inline checks, save/discard protection and saved-progress refresh. OAuth, goal/link controls and test-drive/go-live remain later milestones.
+- Isolated development fixtures verified save/apply preservation, reload, checks, assembled panel and no captured browser errors; real backend verified unavailable fallback. Desktop visual check passed; mobile viewport override did not take effect, so mobile verification remains pending. Syntax and diff checks passed.
+- Backend unchanged and no fixtures shipped. Contract notes flag missing endpoints and new-account JD script defaults; no deployment or live-provider calls.

@@ -1176,3 +1176,24 @@ html.has-access-banner #main { display:flex; flex-direction:column; }
 html.has-access-banner #account-access-banner { flex-shrink:0; }
 html.has-access-banner #view-messages { height:auto; flex:1; min-height:0; }
 html.has-access-banner #main > section:not(#view-messages) { overflow:auto; min-height:0; }
+
+/* Setup uses the same cards, controls and palette as the original UI. */
+.script-tools-box { padding:16px; margin:0 0 16px; border:1px solid var(--border2); border-radius:12px; }
+.script-tools-box summary { cursor:pointer; font-size:14px; font-weight:600; }
+.template-picker { display:grid; gap:12px; padding:16px 0; }
+.template-picker label { font-size:13px; font-weight:600; }
+.assembled-prompt { white-space:pre-wrap; overflow-wrap:anywhere; max-height:420px; overflow:auto; font:12px/1.7 ui-monospace,monospace; padding:16px; margin-top:12px; background:var(--bg); border-radius:10px; }
+.script-check { font-size:12px; padding:8px 0; }
+.check-error { color:var(--red); }
+.check-warn { color:var(--amber); }
+html[data-theme="light"] .check-warn { color:#805000; }
+.setup-steps { display:flex; flex-direction:row; flex-wrap:wrap; gap:8px; padding:24px 0; }
+.setup-steps .btn { white-space:normal; }
+.setup-card { max-width:850px; padding:24px; }
+.setup-card h2 { margin-bottom:12px; }
+.setup-card p { margin:12px 0; }
+.setup-card .btn { margin:8px 8px 0 0; }
+.setup-field { display:block; margin:24px 0 8px; font-size:14px; font-weight:600; }
+.setup-field .set-help { display:block; font-weight:400; }
+#setup-status { margin-top:16px; color:var(--muted); }
+@media(max-width:680px) { .setup-card { padding:16px; } .setup-steps .btn { min-height:44px; } }
