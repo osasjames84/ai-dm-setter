@@ -5,8 +5,12 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { PERSONAS, PERSONA_BY_ID } from './lib/personas.js';
-import { igConfigured, igVerifyWebhook, igParseInbound, igSendText, igSendAudio, igSendAction, igProfile, igStatus, igFetchHistory, onIgAuthError } from './lib/instagram.js';
-import { generateMove, varyMessage, applyOutboundFilter, stripDashes, buildSystemPrompt } from './lib/engine.js';
+import { igConfigured, igVerifyWebhook, igParseInbound, igSendText, igSendAudio, igSendAction, igProfile, igStatus, igFetchHistory, onIgAuthError, setCredsResolver, igOauthConfigured, igAuthUrl, igCompleteOauth, igRefreshToken, igSubscribeApp } from './lib/instagram.js';
+import { initCrypto, encrypt, decrypt } from './lib/crypto.js';
+import { generateMove, varyMessage, applyOutboundFilter, stripDashes, buildSystemPrompt, anthropicClient } from './lib/engine.js';
+import { startTestDrive, getJob as getTestDrive, listJobs as listTestDrives, shapeJob as shapeTestDrive, resolvePersonas } from './lib/testdrive.js';
+import { leadMove } from './lib/personas.js';
+import { reportUsage } from './lib/usage.js';
 import { analyzeDms, generateIdeas, classifyMessages } from './lib/content.js';
 import { createScheduler, withinMessagingWindow } from './lib/scheduler.js';
 import { matchExactPhrase } from './lib/triggers.js';
@@ -18,6 +22,11 @@ import { normalizeAudio, ffmpegAvailable } from './lib/audioconvert.js';
 import { transcribeAudio } from './lib/transcribe.js';
 import { initNotify, notify, notifyReady } from './lib/notify.js';
 import { runBackup, latestBackup } from './lib/backup.js';
+import { captureException, errorMiddleware, errorsReady } from './lib/errors.js';
+import { installLogging } from './lib/logs.js';
+import { offsiteReady, uploadBackup } from './lib/offsite.js';
+import { knowledgeDir } from './lib/knowledge.js';
+installLogging();
 import { runMigrations } from './lib/migrations.js';
 import { runAs, enterAs, outside, currentAccount, currentAccountOrFirst, FIRST_ACCOUNT_ID } from './lib/tenancy.js';
 import { initAuth, requestMagicLink, consumeMagicLink, sessionFromRequest, logout as authLogout, pruneAuth, isEmail, normalizeEmail } from './lib/auth.js';
@@ -506,8 +515,27 @@ setUsageHook((u) => {
 const accountActive = (id) => db.prepare('SELECT access_status FROM accounts WHERE id = ?').get(id)?.access_status === 'active';
 const audit = (accountId, actorUserId, action, detail = '') =>
   db.prepare('INSERT INTO account_audit (account_id, actor_user_id, action, detail, at) VALUES (?, ?, ?, ?, ?)').run(accountId, actorUserId || null, action, String(detail || '').slice(0, 500), nowIso());
-/** Which account owns an Instagram business id (webhook routing). */
-const accountForBusinessId = (bid) => db.prepare('SELECT account_id FROM instagram_accounts WHERE business_id = ?').get(String(bid || ''))?.account_id || null;
+/** Which account owns an Instagram business id (webhook routing). Matches the professional account id or the app-scoped id. */
+const igRowForBusinessId = (bid) => db.prepare('SELECT * FROM instagram_accounts WHERE business_id = ? OR app_scoped_id = ?').get(String(bid || ''), String(bid || '')) || null;
+const accountForBusinessId = (bid) => igRowForBusinessId(bid)?.account_id || null;
+const igRowFor = (accountId) => db.prepare('SELECT * FROM instagram_accounts WHERE account_id = ?').get(accountId) || null;
+
+// Instagram credentials for the CURRENT account: an OAuth token stored
+// encrypted on instagram_accounts, or (first account only, transition period)
+// the IG_PAGE_TOKEN env var. Disconnected rows resolve to nothing.
+console.log(`[crypto] token key: ${initCrypto(DATA_DIR)}`);
+setCredsResolver(() => {
+  const a = currentAccountOrFirst('instagram');
+  const row = igRowFor(a);
+  if (row && row.token_enc && row.status !== 'disconnected') {
+    const token = decrypt(row.token_enc);
+    if (token) return { token, businessId: String(row.business_id) };
+  }
+  if (a === FIRST_ACCOUNT_ID && process.env.IG_PAGE_TOKEN && process.env.IG_BUSINESS_ID && (!row || row.status !== 'disconnected')) {
+    return { token: process.env.IG_PAGE_TOKEN, businessId: String(process.env.IG_BUSINESS_ID) };
+  }
+  return null;
+});
 
 // Outbound punctuation cleanup is OPT-IN (Settings › AI Controls › Strip dashes).
 const cleanOutbound = (t) => (getSetting('strip_dashes') === '1' ? stripDashes(t) : String(t ?? ''));
@@ -548,8 +576,8 @@ setInterval(maybeRefreshCalendly, 15 * 60 * 1000);  // and keep it fresh
 // Process-level safety nets: a fire-and-forget scheduler turn (autopilot / follow-up)
 // that rejects would otherwise crash Node 23. LOG and keep the process alive — the
 // scheduler already surfaces the affected lead in Needs Review.
-process.on('unhandledRejection', (r) => console.error('[unhandledRejection]', r));
-process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
+process.on('unhandledRejection', (r) => { console.error('[unhandledRejection]', r); captureException(r, { tags: { where: 'unhandledRejection' } }); });
+process.on('uncaughtException', (e) => { console.error('[uncaughtException]', e); captureException(e, { tags: { where: 'uncaughtException' } }); });
 
 const app = express();
 app.set('trust proxy', 1); // Railway's edge proxy — needed for req.ip in the PIN lockout
@@ -1117,12 +1145,15 @@ const scheduler = createScheduler({
 // via /api/instagram/status) and notify ONCE per outage (only when the setting was
 // previously empty) so a burst of failed sends doesn't spam the owner.
 onIgAuthError((detail) => {
+  const a = currentAccountOrFirst('ig-auth');
   if (detail) {
     const was = getSetting('ig_auth_error') || '';
     setSetting('ig_auth_error', JSON.stringify({ at: nowIso(), detail: String(detail).slice(0, 200) }));
+    db.prepare("UPDATE instagram_accounts SET status = 'needs_reconnect', last_error = ?, updated_at = ? WHERE account_id = ? AND status = 'connected'").run(String(detail).slice(0, 200), nowIso(), a);
     if (!was) notify('Instagram token error', `Instagram rejected a request (token may be expired/revoked): ${String(detail).slice(0, 200)}`).catch(() => {});
   } else {
     setSetting('ig_auth_error', ''); // healthy token → clear
+    db.prepare("UPDATE instagram_accounts SET status = 'connected', last_error = NULL, updated_at = ? WHERE account_id = ? AND status = 'needs_reconnect'").run(nowIso(), a);
   }
 });
 
@@ -1148,18 +1179,44 @@ app.get('/auth/magic', (req, res) => {
   res.redirect('/');
 });
 app.post('/api/logout', (req, res) => { res.setHeader('Set-Cookie', authLogout(req)); res.json({ ok: true }); });
-app.get('/api/me', requireAccount, (req, res) => {
-  const ig = db.prepare('SELECT * FROM instagram_accounts WHERE account_id = ?').get(req.accountId);
+/** The instagram object shared by /api/me and /api/instagram/status. */
+function instagramShape(accountId) {
+  const ig = igRowFor(accountId);
   const igErr = parseJ(getSetting('ig_auth_error') || '', null);
+  const configured = igConfigured();
+  return {
+    connected: configured && (!ig || ig.status !== 'disconnected'),
+    username: ig?.username || null,
+    business_id: ig?.business_id || null,
+    needs_reconnect: !!igErr || ig?.status === 'needs_reconnect',
+    expires_at: ig?.expires_at || null,
+    via: ig?.token_enc ? 'oauth' : (configured ? 'env' : null),
+    oauth_available: igOauthConfigured(),
+    connect_url: igOauthConfigured() ? '/auth/instagram/start' : null,
+    signature_verified: !!process.env.IG_APP_SECRET,
+  };
+}
+app.get('/api/me', requireAccount, (req, res) => {
   res.json({
     user: { id: req.user.id, email: req.user.email, role: req.user.role, is_platform_admin: !!req.user.is_platform_admin },
     account: { id: req.account.id, name: req.account.name, access_status: req.account.access_status },
-    instagram: { connected: !!ig && igConfigured(), username: ig?.username || null, needs_reconnect: !!igErr, signature_verified: !!process.env.IG_APP_SECRET },
+    instagram: instagramShape(req.accountId),
     onboarding_complete: getSetting('kill_switch') === '0' && !!String(getSetting('prompt_qualification') || '').trim(),
   });
 });
 
 // ---------- platform admin (JD only) ----------
+// Ops at a glance for the platform admin: what is wired, when the last backup ran.
+app.get('/api/admin/ops', requireAccount, requirePlatformAdmin, (req, res) => {
+  const last = latestBackup(DATA_DIR);
+  res.json({
+    sentry: errorsReady(), offsite_backups: offsiteReady(), log_format: process.env.LOG_FORMAT === 'json' ? 'json' : 'text',
+    instagram_oauth: igOauthConfigured(), signature_verified: !!process.env.IG_APP_SECRET, email: notifyReady(),
+    last_backup: last ? path.basename(last) : null,
+    accounts: db.prepare('SELECT access_status, COUNT(*) AS n FROM accounts GROUP BY access_status').all(),
+    instagram_accounts: db.prepare('SELECT status, COUNT(*) AS n FROM instagram_accounts GROUP BY status').all(),
+  });
+});
 app.get('/api/admin/accounts', requireAccount, requirePlatformAdmin, (req, res) => {
   const rows = db.prepare(`SELECT a.*, 
       (SELECT email FROM users u WHERE u.account_id = a.id AND u.role = 'owner' ORDER BY created_at LIMIT 1) AS owner_email,
@@ -1234,6 +1291,81 @@ app.delete('/api/team/:id', requireAccount, requireOwner, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- data export and account deletion (owner) ----------
+/** Everything the account owns, as one JSON document. Secrets are left out. */
+function exportAccount(accountId) {
+  const acc = db.prepare('SELECT id, name, access_status, created_at FROM accounts WHERE id = ?').get(accountId);
+  const settings = {};
+  for (const r of db.prepare('SELECT key, value FROM account_settings WHERE account_id = ?').all(accountId)) {
+    if (!SECRET_SETTING_KEYS.has(r.key) && !r.key.startsWith('_')) settings[r.key] = r.value;
+  }
+  const conversations = db.prepare('SELECT * FROM conversations WHERE account_id = ? ORDER BY created_at').all(accountId).map((c) => ({
+    ...c,
+    messages: db.prepare('SELECT id, role, text, source, att_type, att_id, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at, id').all(c.id),
+    stage_events: db.prepare('SELECT * FROM stage_events WHERE conversation_id = ? ORDER BY at').all(c.id),
+  }));
+  const drafts = db.prepare('SELECT * FROM drafts WHERE account_id = ?').all(accountId);
+  const users = db.prepare('SELECT id, email, role, created_at, last_login_at FROM users WHERE account_id = ?').all(accountId);
+  const ig = igRowFor(accountId);
+  const usage = db.prepare('SELECT day, model, calls, input_tokens, output_tokens FROM ai_usage WHERE account_id = ? ORDER BY day').all(accountId);
+  let knowledge = [];
+  try { knowledge = fs.readdirSync(knowledgeDir(accountId)); } catch { /* none */ }
+  return { exported_at: nowIso(), account: acc, users, settings, instagram: ig ? { username: ig.username, business_id: ig.business_id, status: ig.status } : null, conversations, drafts, knowledge_files: knowledge, ai_usage: usage };
+}
+app.get('/api/account/export', requireAccount, requireOwner, (req, res) => {
+  audit(req.accountId, req.user.id, 'export');
+  res.setHeader('Content-Disposition', `attachment; filename="dmsetter-${req.accountId}-${nowIso().slice(0, 10)}.json"`);
+  res.json(exportAccount(req.accountId));
+});
+
+/** Remove every row and file an account owns. The first account is never deleted this way. */
+function deleteAccountData(accountId) {
+  if (accountId === FIRST_ACCOUNT_ID) throw new Error('The first account cannot be deleted');
+  tx(() => {
+    const convIds = db.prepare('SELECT id FROM conversations WHERE account_id = ?').all(accountId).map((r) => r.id);
+    for (const id of convIds) {
+      db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(id);
+      db.prepare('DELETE FROM stage_events WHERE conversation_id = ?').run(id);
+      db.prepare('DELETE FROM drafts WHERE conversation_id = ?').run(id);
+    }
+    db.prepare('DELETE FROM conversations WHERE account_id = ?').run(accountId);
+    db.prepare('DELETE FROM drafts WHERE account_id = ?').run(accountId);
+    db.prepare('DELETE FROM account_settings WHERE account_id = ?').run(accountId);
+    db.prepare('DELETE FROM instagram_accounts WHERE account_id = ?').run(accountId);
+    db.prepare('DELETE FROM oauth_states WHERE account_id = ?').run(accountId);
+    db.prepare('DELETE FROM ai_usage WHERE account_id = ?').run(accountId);
+    db.prepare('DELETE FROM account_audit WHERE account_id = ?').run(accountId);
+    for (const u of db.prepare('SELECT id, email FROM users WHERE account_id = ?').all(accountId)) {
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
+      db.prepare('DELETE FROM magic_links WHERE email = ?').run(u.email);
+    }
+    db.prepare('DELETE FROM users WHERE account_id = ?').run(accountId);
+    db.prepare('DELETE FROM accounts WHERE id = ?').run(accountId);
+  });
+  try { fs.rmSync(knowledgeDir(accountId), { recursive: true, force: true }); } catch { /* best effort */ }
+  _settingsCache.delete(accountId);
+}
+// Owner: body { confirm: "<owner email>" } guards against an accidental click.
+app.delete('/api/account', requireAccount, requireOwner, (req, res) => {
+  if (req.accountId === FIRST_ACCOUNT_ID) return res.status(400).json({ error: 'The first account cannot be deleted' });
+  if (normalizeEmail(req.body?.confirm) !== normalizeEmail(req.user.email)) return res.status(400).json({ error: 'Type your email in "confirm" to delete the workspace' });
+  const name = req.account.name;
+  deleteAccountData(req.accountId);
+  audit(FIRST_ACCOUNT_ID, req.user.id, 'account-deleted', `${req.accountId} (${name}) by its owner ${req.user.email}`);
+  console.log(`[accounts] ${req.accountId} deleted by its owner`);
+  res.setHeader('Set-Cookie', authLogout(req));
+  res.json({ ok: true });
+});
+app.delete('/api/admin/accounts/:id', requireAccount, requirePlatformAdmin, (req, res) => {
+  const id = String(req.params.id);
+  const acc = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
+  if (!acc) return res.status(404).json({ error: 'Not found' });
+  if (id === FIRST_ACCOUNT_ID) return res.status(400).json({ error: 'The first account cannot be deleted' });
+  deleteAccountData(id);
+  audit(FIRST_ACCOUNT_ID, req.user.id, 'account-deleted', `${id} (${acc.name}) by platform admin`);
+  res.json({ ok: true });
+});
+
 // ---------- script templates ----------
 const TEMPLATES = (() => {
   const dir = path.join(__dirname, 'prompts', 'templates');
@@ -1288,12 +1420,12 @@ app.get('/api/script/checks', requireAccount, (req, res) => res.json(scriptCheck
 // ---------- onboarding ----------
 function onboardingSteps(req) {
   const s = allSettings();
-  const ig = db.prepare('SELECT 1 FROM instagram_accounts WHERE account_id = ?').get(req.accountId);
+  const ig = igRowFor(req.accountId);
   const errors = scriptChecks().filter((c) => c.level === 'error');
   const sections = ['prompt_persona', 'prompt_offer', 'prompt_qualification', 'prompt_booking', 'prompt_hard_rules'].every((k) => String(s[k] || '').trim());
   const link = s.next_step_type === 'human' || !!String(s.next_step_type === 'call' ? s.calendar_link : s.next_step_link || '').trim();
   return {
-    instagram: !!ig && (req.accountId === FIRST_ACCOUNT_ID ? igConfigured() : true),
+    instagram: !!ig && ig.status !== 'disconnected' && igConfigured(),
     template: !!String(s.template_id || '').trim() || sections,
     sections,
     next_step: link,
@@ -1309,6 +1441,35 @@ app.post('/api/onboarding/go-live', requireAccount, requireActive, (req, res) =>
   setSetting('default_mode', 'autopilot');
   audit(req.accountId, req.user.id, 'go-live');
   res.json({ ok: true });
+});
+
+// Test drive: the script versus simulated leads, off the inbox. POST starts a
+// job and returns it at once; poll GET /api/onboarding/test-drive/:id. Pass
+// ?wait=1 on the POST to block up to 90s and get the finished job (old contract).
+app.post('/api/onboarding/test-drive', requireAccount, requireActive, async (req, res) => {
+  const a = anthropicClient();
+  if (!a) return res.status(503).json({ error: 'AI is not configured on the server' });
+  const errors = scriptChecks().filter((c) => c.level === 'error');
+  if (errors.length) return res.status(400).json({ error: 'Fix the script first: ' + errors[0].message, checks: errors });
+  if (listTestDrives(req.accountId).some((j) => j.status === 'running')) return res.status(409).json({ error: 'A test drive is already running' });
+  const personas = resolvePersonas(req.body?.persona_ids);
+  if (!personas.length) return res.status(400).json({ error: 'Unknown persona ids' });
+  const settings = { ...engineSettings(), kill_switch: '0' };
+  const job = startTestDrive({ personas, settings, accountId: req.accountId, anthropic: a, generateMove, leadMove, runAs, reportUsage,
+    onDone: (j) => { if (j.passed) setSetting('test_drive_passed_at', nowIso()); audit(req.accountId, req.user.id, 'test-drive-result', j.passed ? 'passed' : 'failed'); } });
+  audit(req.accountId, req.user.id, 'test-drive', personas.map((p) => p.id).join(','));
+  if (String(req.query.wait || '') === '1') {
+    const deadline = Date.now() + 90_000;
+    while (job.status === 'running' && Date.now() < deadline) await new Promise((r) => setTimeout(r, 1000));
+    return res.json(shapeTestDrive(job));
+  }
+  res.status(202).json(shapeTestDrive(job));
+});
+app.get('/api/onboarding/test-drive', requireAccount, (req, res) => res.json(listTestDrives(req.accountId).map(shapeTestDrive).sort((x, y) => (x.started_at < y.started_at ? 1 : -1))));
+app.get('/api/onboarding/test-drive/:id', requireAccount, (req, res) => {
+  const job = getTestDrive(req.params.id);
+  if (!job || job.account_id !== req.accountId) return res.status(404).json({ error: 'Not found' });
+  res.json(shapeTestDrive(job));
 });
 
 app.get('/api/prompt-starter', requireAdmin, (req, res) => {
@@ -1343,8 +1504,8 @@ app.get('/api/instagram/status', requireAdmin, async (req, res) => {
   // FEATURE 2: surface a dead/revoked token to the UI. Read AFTER igStatus so a
   // just-healed token (igStatus cleared it) reports null immediately.
   st.auth_error = parseJ(getSetting('ig_auth_error') || '', null);
-  st.signature_verified = !!process.env.IG_APP_SECRET; // false → Settings shows the IG_APP_SECRET notice (webhooks are rejected until it is set)
-  res.json(st);
+  st.verify_token_set = !!process.env.IG_VERIFY_TOKEN;
+  res.json({ ...st, ...instagramShape(req.accountId) });
 });
 
 // FEATURE 4: on-demand SQLite backup download. Runs a FRESH backup first so the
@@ -1366,7 +1527,7 @@ app.post('/api/instagram/sync-history', requireAdmin, async (req, res) => {
     const threads = await igFetchHistory();
     let newConvs = 0, newMsgs = 0;
     for (const th of threads) {
-      let conv = db.prepare("SELECT * FROM conversations WHERE channel = 'instagram' AND external_id = ?").get(th.leadId);
+      let conv = db.prepare("SELECT * FROM conversations WHERE channel = 'instagram' AND external_id = ? AND account_id = ?").get(th.leadId, req.accountId);
       if (!conv) {
         conv = createConversation({ channel: 'instagram', external_id: th.leadId, handle: th.handle, display_name: th.name });
         newConvs++;
@@ -2011,17 +2172,85 @@ app.post('/api/conversations/:id/lead-message', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- instagram business-login OAuth redirect landing ----------
-// Meta requires a valid HTTPS redirect URL for the Instagram Business Login
-// config. The owner generates their long-lived token from the Meta dashboard
-// directly (copied into IG_PAGE_TOKEN), so this just gives a clean landing page
-// after authorizing rather than a 404.
-app.get('/auth/instagram/callback', (req, res) => {
-  res.type('html').send('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Instagram authorization</title></head>'
-    + '<body style="font-family:Inter,system-ui,sans-serif;background:#171a21;color:#f9fafa;display:grid;place-items:center;min-height:100vh;margin:0;text-align:center;padding:24px">'
-    + '<div style="max-width:420px"><h2 style="font-weight:600;margin:0 0 8px">Instagram authorization received</h2>'
-    + '<p style="color:#a7abb4;line-height:1.6;margin:0">You can close this tab. Copy your access token and account ID from the Meta dashboard and add them to the app.</p></div></body></html>');
+// ---------- instagram login (OAuth) per account ----------
+// GET /auth/instagram/start  (logged in)  → 302 to Instagram's consent screen
+// GET /auth/instagram/callback           → exchanges the code, stores the
+//   60-day token encrypted on the account, subscribes the webhook, 302 to
+//   /?connected=1 (or /?connect_error=…). Needs IG_APP_ID + IG_APP_SECRET.
+const IG_REDIRECT = () => `${PUBLIC_URL()}/auth/instagram/callback`;
+app.get('/auth/instagram/start', requireAccount, (req, res) => {
+  if (!igOauthConfigured()) return res.status(503).type('html').send(legalPage('Instagram login not configured', [['Missing app credentials', 'IG_APP_ID and IG_APP_SECRET are not set on the server, so Instagram login is unavailable. The first account can still use the env token.']]));
+  const state = crypto.randomBytes(24).toString('base64url');
+  db.prepare('DELETE FROM oauth_states WHERE expires_at < ?').run(nowIso());
+  db.prepare('INSERT INTO oauth_states (state, account_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)')
+    .run(state, req.accountId, req.user.id, nowIso(), new Date(Date.now() + 15 * 60_000).toISOString());
+  res.redirect(igAuthUrl(IG_REDIRECT(), state));
 });
+app.get('/auth/instagram/callback', async (req, res) => {
+  const fail = (msg) => res.redirect('/?connect_error=' + encodeURIComponent(String(msg).slice(0, 120)));
+  const { code, state, error, error_description } = req.query;
+  if (error) return fail(error_description || error);
+  const st = state && db.prepare('SELECT * FROM oauth_states WHERE state = ?').get(String(state));
+  if (!st || st.expires_at < nowIso()) return fail('login link expired, try again');
+  db.prepare('DELETE FROM oauth_states WHERE state = ?').run(st.state);
+  if (!code) return fail('no code returned');
+  try {
+    const got = await igCompleteOauth(String(code), IG_REDIRECT());
+    if (!got.businessId) return fail('could not read the Instagram account id');
+    const taken = igRowForBusinessId(got.businessId);
+    if (taken && taken.account_id !== st.account_id) return fail('that Instagram account is already connected to another workspace');
+    await runAs(st.account_id, async () => {
+      db.prepare('DELETE FROM instagram_accounts WHERE account_id = ?').run(st.account_id);
+      db.prepare(`INSERT INTO instagram_accounts (account_id, business_id, app_scoped_id, username, token_enc, expires_at, scopes, status, last_refresh_at, last_error, updated_at)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, 'connected', ?, NULL, ?)`)
+        .run(st.account_id, got.businessId, got.appScopedId || null, got.username, encrypt(got.token), got.expiresAt, got.scopes, nowIso(), nowIso());
+      setSetting('ig_auth_error', '');
+      const subscribed = await igSubscribeApp(got.token, got.businessId);
+      audit(st.account_id, st.user_id, 'instagram-connect', `@${got.username || got.businessId} subscribed=${subscribed}`);
+      console.log(`[instagram] ${st.account_id} connected @${got.username || '?'} (webhook subscription ${subscribed ? 'ok' : 'FAILED'})`);
+    });
+    res.redirect('/?connected=1');
+  } catch (e) {
+    console.error('[instagram] oauth failed:', e.message);
+    fail(e.message);
+  }
+});
+app.post('/api/instagram/disconnect', requireAccount, requireOwner, (req, res) => {
+  const row = igRowFor(req.accountId);
+  if (!row) return res.json({ ok: true });
+  db.prepare("UPDATE instagram_accounts SET token_enc = NULL, status = 'disconnected', updated_at = ? WHERE account_id = ?").run(nowIso(), req.accountId);
+  setSetting('kill_switch', '1');      // no channel → the AI has nothing to answer on; go-live re-enables it
+  setSetting('ig_auth_error', '');
+  audit(req.accountId, req.user.id, 'instagram-disconnect', row.username || row.business_id);
+  res.json({ ok: true });
+});
+
+// Token refresh: Instagram long-lived tokens last 60 days and can be refreshed
+// once they are older than a day. Daily pass: refresh anything expiring within
+// 10 days; a failure marks the account needs_reconnect (the UI shows a banner).
+async function refreshInstagramTokens() {
+  if (!igOauthConfigured()) return;
+  const soon = new Date(Date.now() + 10 * 86400_000).toISOString();
+  const dayAgo = new Date(Date.now() - 86400_000).toISOString();
+  const rows = db.prepare("SELECT * FROM instagram_accounts WHERE token_enc IS NOT NULL AND status != 'disconnected' AND (expires_at IS NULL OR expires_at < ?) AND (last_refresh_at IS NULL OR last_refresh_at < ?)").all(soon, dayAgo);
+  for (const row of rows) {
+    const token = decrypt(row.token_enc);
+    if (!token) continue;
+    try {
+      const got = await igRefreshToken(token);
+      db.prepare("UPDATE instagram_accounts SET token_enc = ?, expires_at = ?, last_refresh_at = ?, last_error = NULL, status = 'connected', updated_at = ? WHERE account_id = ?")
+        .run(encrypt(got.token), got.expiresAt, nowIso(), nowIso(), row.account_id);
+      console.log(`[instagram] refreshed token for ${row.account_id} (expires ${got.expiresAt.slice(0, 10)})`);
+    } catch (e) {
+      db.prepare("UPDATE instagram_accounts SET status = 'needs_reconnect', last_error = ?, updated_at = ? WHERE account_id = ?").run(e.message.slice(0, 200), nowIso(), row.account_id);
+      console.error(`[instagram] token refresh failed for ${row.account_id}: ${e.message}`);
+      runAs(row.account_id, () => notify('Instagram needs reconnecting', 'The Instagram token could not be refreshed. Open Settings and reconnect Instagram.').catch(() => {}));
+    }
+  }
+}
+setTimeout(() => refreshInstagramTokens().catch(() => {}), 30_000);
+const igRefreshTimer = setInterval(() => refreshInstagramTokens().catch(() => {}), 24 * 60 * 60 * 1000);
+if (igRefreshTimer.unref) igRefreshTimer.unref();
 
 // ---------- legal pages (required to publish the Meta app) ----------
 // Real, honest policy pages so the app can go Live. Generic by design — the
@@ -2171,7 +2400,10 @@ function verifyWebhookSignature(req) {
     // and with a red notice on the Settings › Instagram card (signature_verified
     // = false). Until IG_APP_SECRET is set, anyone who finds the webhook URL could
     // forge lead messages. Verification enforces itself the moment it is set.
-    if (igConfigured() && !_igUnsignedWarned) { console.error('[webhook] IG_APP_SECRET is not set — accepting UNVERIFIED Instagram webhooks. Add it on Railway (Meta app → Settings → Basic → App Secret) to enforce signatures.'); _igUnsignedWarned = true; }
+    // Once Instagram login is configured the secret exists, so signatures are
+    // always verified for OAuth-connected accounts; only the env-token setup can
+    // run unverified.
+    if (!_igUnsignedWarned) { console.error('[webhook] IG_APP_SECRET is not set — accepting UNVERIFIED Instagram webhooks. Add it on Railway (Meta app → Settings → Basic → App Secret) to enforce signatures.'); _igUnsignedWarned = true; }
     return true;
   }
   const header = String(req.headers['x-hub-signature-256'] || '');
@@ -2184,9 +2416,9 @@ function verifyWebhookSignature(req) {
 app.post('/webhook/instagram', async (req, res) => {
   if (!verifyWebhookSignature(req)) return res.sendStatus(403); // reject spoofed webhooks
   res.sendStatus(200);
-  if (!igConfigured()) return;
   let events = [];
-  try { events = igParseInbound(req.body); } catch { return; }
+  // entry.id → the professional account id we have on file (OAuth rows), else the env id.
+  try { events = igParseInbound(req.body, (entryId) => igRowForBusinessId(entryId)?.business_id || null); } catch { return; }
   // Content-free logging only — never log message text, handles, or the raw body.
   // The inbound/outbound split tells us whether Instagram is delivering echoes
   // (the owner's own native-app sends) at all.
@@ -2204,15 +2436,18 @@ app.post('/webhook/instagram', async (req, res) => {
       // the connected IG account, this is a self-referential event (a self-DM /
       // owner echo mis-resolved); the AI once answered JD's own typed text as if a
       // lead (atunrolaaluko, mangoboymangoman). Skip it entirely.
-      if (process.env.IG_BUSINESS_ID && String(ev.leadId) === String(process.env.IG_BUSINESS_ID)) {
+      if (ev.businessId && String(ev.leadId) === String(ev.businessId)) {
         console.log('[webhook] ignored self-referential event');
         continue;
       }
       // Dedup: skip our OWN sends echoing back (mid pre-stored by deliver) + retries.
       if (ev.mid && db.prepare('SELECT 1 FROM messages WHERE mid = ?').get(ev.mid)) continue;
-      // Which account owns this Instagram account? (env-token era: always acc_1)
-      const accountId = accountForBusinessId(process.env.IG_BUSINESS_ID) || FIRST_ACCOUNT_ID;
+      // Which account owns this Instagram account? Unknown ids fall back to the
+      // first account only while it still runs on the env token.
+      const accountId = accountForBusinessId(ev.businessId) || (process.env.IG_PAGE_TOKEN ? FIRST_ACCOUNT_ID : null);
+      if (!accountId) { console.log('[webhook] event for an unknown Instagram account ignored'); continue; }
       await runAs(accountId, async () => {
+      if (!igConfigured()) return;   // disconnected account: keep nothing
       // The lead is the OTHER party in both directions — leadId already resolved it.
       let conv = db.prepare("SELECT * FROM conversations WHERE channel = 'instagram' AND external_id = ? AND account_id = ?").get(ev.leadId, accountId);
       if (!conv) {
@@ -2400,15 +2635,19 @@ scheduler.start(); // Phase 4: begin the follow-up sweep
 // FEATURE 4: nightly SQLite backup (VACUUM INTO → <DATA_DIR>/backups/, keep 7).
 // Run once on boot, then every 24h. Wrapped so a backup failure never crashes.
 function nightlyBackup() {
-  try { console.log('[backup] ok ' + runBackup(db, DATA_DIR)); }
-  catch (e) { console.error('[backup] failed ' + e.message); }
+  let file;
+  try { file = runBackup(db, DATA_DIR); console.log('[backup] ok ' + file); }
+  catch (e) { console.error('[backup] failed ' + e.message); captureException(e, { tags: { where: 'backup' } }); return; }
+  // Off-box copy (S3-compatible) when configured, so a lost volume is not a lost business.
+  if (offsiteReady()) uploadBackup(file).then((k) => console.log('[backup] offsite ok ' + k)).catch((e) => { console.error('[backup] offsite failed ' + e.message); captureException(e, { tags: { where: 'backup-offsite' } }); });
 }
 nightlyBackup();
 const backupTimer = setInterval(nightlyBackup, 24 * 60 * 60 * 1000);
 if (backupTimer.unref) backupTimer.unref(); // don't keep the process alive for a backup
 
 setInterval(() => { try { pruneAuth(); } catch { /* best-effort */ } }, 6 * 3600_000).unref();
+app.use(errorMiddleware);   // last: report + 500 without a stack in the body
 outside(() => app.listen(PORT, () => {
-  console.log(`dmSetter on http://localhost:${PORT} (AI ${process.env.ANTHROPIC_API_KEY ? 'ready' : 'OFF'}, instagram ${igConfigured() ? 'CONNECTED' : 'dormant'}, timers ${process.env.FAST_TIMERS === '1' ? 'FAST' : 'real'})`);
+  console.log(`dmSetter on http://localhost:${PORT} (AI ${process.env.ANTHROPIC_API_KEY ? 'ready' : 'OFF'}, instagram ${igConfigured() ? 'CONNECTED' : 'dormant'}, oauth ${igOauthConfigured() ? 'ready' : 'off'}, sentry ${errorsReady() ? 'on' : 'off'}, offsite ${offsiteReady() ? 'on' : 'off'}, timers ${process.env.FAST_TIMERS === '1' ? 'FAST' : 'real'})`);
   runAs(FIRST_ACCOUNT_ID, () => backfillInstagramHandles()).catch((e) => console.log('handle backfill error:', e.message));
 }));

@@ -32,3 +32,13 @@ Shipped on `beta/backend`:
 - New settings: template_id, next_step_type/link, currency, timezone, country, test_drive_passed_at.
 Verified: new account signs up pending → applies the agency template → checks list the placeholders → go-live 403 while pending → JD approves → go-live 400 until a booking link is set → go-live ok; knowledge and prompts isolated between accounts; JD's real script passes all checks.
 Next (day 6): Instagram OAuth per account, token refresh, disconnect, signature enforcement.
+
+## Days 6 to 10 — Instagram login, test drive, isolation tests, ops
+Shipped on `beta/backend`:
+- **Instagram login per account** (`lib/instagram.js` now reads credentials through a per-account resolver; the first account keeps the env token until it reconnects). OAuth start/callback with a state token, 60-day token stored encrypted (AES-256-GCM, `lib/crypto.js`, key from TOKEN_ENC_KEY or a generated key file on the volume), webhook subscription on connect, daily refresh (10 days before expiry; failure → needs_reconnect + email), disconnect. Webhook events route by `entry.id` to the owning account; unknown ids are dropped unless the env token is still in use. Signatures are enforced whenever IG_APP_SECRET exists, which OAuth requires, so every OAuth-era account is verified.
+- **Test drive** (`lib/testdrive.js`): in-memory job, Claude plays the persona, the engine plays the setter, Haiku grades each transcript with up to three notes. Nothing touches the inbox. Passed jobs set test_drive_passed_at.
+- **Tenant isolation suite** `test/isolation.test.mjs` (`npm test`): 22 checks across two accounts (visibility, settings, admin gating, template isolation, Instagram shape, OAuth error paths, export, delete). All green.
+- **Ops**: Sentry reporting without the SDK (`lib/errors.js`, express error middleware + process hooks, 30 events/min cap), structured logs with the account id on every line (`lib/logs.js`, LOG_FORMAT=json), nightly backup copied to any S3-compatible bucket (`lib/offsite.js`, SigV4 by hand), `GET /api/admin/ops`.
+- **Data**: `GET /api/account/export`, `DELETE /api/account` (confirm with the owner email), admin delete. The first account can never be deleted through the API.
+Verified: sandbox test drive on JD's real script (price hunter + warm lead). The warm lead passed clean. The price hunter run asked the money question before any pain question, which the grader flagged. That is the script being followed loosely by the model, not a code bug, and it is exactly what the test drive is for.
+Not done: nothing from the plan. Day 9 was shipped on day 2.

@@ -2,13 +2,14 @@
   "name": "dmsetter",
   "version": "0.1.0",
   "type": "module",
-  "description": "dmSetter — AI Instagram DM setter: replies as the coach, qualifies leads, books calls.",
+  "description": "dmSetter \u2014 AI Instagram DM setter: replies as the coach, qualifies leads, books calls.",
   "engines": {
     "node": ">=23"
   },
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "node test/isolation.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.109.1",

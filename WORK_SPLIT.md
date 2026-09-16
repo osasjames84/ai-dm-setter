@@ -164,3 +164,35 @@ New settings keys (all strings, PUT /api/settings as usual):
 New accounts start with EMPTY script sections (no starter seeded): the wizard applies a template. The knowledge base is per account.
 Calendly: each account has its own token/availability; webhook URL is /webhook/calendly/<account id> (the first account keeps /webhook/calendly).
 ```
+
+## Days 6 to 10 contract notes (shipped on beta/backend)
+
+```
+Instagram (per account)
+GET  /auth/instagram/start            → 302 to Instagram login (needs IG_APP_ID + IG_APP_SECRET on the server; 503 page otherwise)
+GET  /auth/instagram/callback         → 302 /?connected=1 | /?connect_error=<message>
+POST /api/instagram/disconnect        → { "ok" }   owner only; turns the kill switch on
+/api/me.instagram and /api/instagram/status now carry:
+  { connected, username, business_id, needs_reconnect, expires_at, via: "oauth"|"env"|null, oauth_available, connect_url: "/auth/instagram/start"|null, signature_verified }
+  plus on /status: webhook_url, verify_token_set, auth_error, account (live Graph check)
+Tokens refresh themselves daily; a failed refresh sets needs_reconnect (show the reconnect banner).
+
+Test drive (async; poll)
+POST /api/onboarding/test-drive       { "persona_ids": [...] | omitted for the default 5 } → 202 job
+       job = { id, status: "running"|"done"|"error", passed: bool|null, started_at, finished_at, error,
+               runs: [ { persona: { id, name, handle }, status, transcript: [ { role, text } ], final_stage, flagged, flag_reason, verdict: "pass"|"warn"|"fail"|null, notes: [..] } ] }
+       ?wait=1 blocks up to 90s and returns the finished job (old synchronous contract). 409 while one is running, 400 when the script has error-level checks, 503 without AI.
+GET  /api/onboarding/test-drive       → [ jobs, newest first ]
+GET  /api/onboarding/test-drive/:id   → job
+A passed job sets settings.test_drive_passed_at (onboarding step test_drive turns true).
+Persona ids: warm_keyword, price_shock (alias price_hunter), think_about_it, broke_student (alias broke), no_time, skeptic, diy, ghost, dream_buyer, tirekicker, under_18 (alias underage).
+
+Account data
+GET    /api/account/export            → JSON download of everything the account owns (owner only)
+DELETE /api/account                   { "confirm": "<owner email>" } → { "ok" }; logs the user out. Not allowed on the first account.
+DELETE /api/admin/accounts/:id        → { "ok" }   platform admin
+GET    /api/admin/ops                 → { sentry, offsite_backups, log_format, instagram_oauth, signature_verified, email, last_backup, accounts: [{access_status, n}], instagram_accounts: [{status, n}] }
+```
+
+Server env (all optional): IG_APP_ID, IG_APP_SECRET (Instagram login + signature checks), TOKEN_ENC_KEY (64 hex chars; auto-generated into DATA_DIR/.token_key otherwise), SENTRY_DSN, LOG_FORMAT=json, BACKUP_S3_BUCKET / BACKUP_S3_ACCESS_KEY / BACKUP_S3_SECRET_KEY (+ BACKUP_S3_ENDPOINT, BACKUP_S3_REGION, BACKUP_S3_PREFIX).
+`npm test` boots the server on a scratch folder and runs the tenant isolation suite.
