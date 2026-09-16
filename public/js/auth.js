@@ -2,6 +2,7 @@
 const signedOutState = structuredClone(state);
 sessionStorage.removeItem('pin');
 function showLogin(message = '') {
+  stopLiveEvents();
   const epoch = state.sessionEpoch + 1;
   Object.assign(state, structuredClone(signedOutState), { sessionEpoch: epoch });
   $('#app').classList.add('hidden');
@@ -10,7 +11,7 @@ function showLogin(message = '') {
   $('#login-sent').classList.add('hidden');
   $('#login-err').textContent = message;
   $('#login-retry').classList.add('hidden');
-  for (const id of ['team-page','operator-page','onboarding-page','dash-page','view-messages','drafts-page','prompt-page','content-page','settings-page']) {
+  for (const id of ['analytics-page','versions-page','team-page','operator-page','onboarding-page','dash-page','view-messages','drafts-page','prompt-page','content-page','settings-page']) {
     const el = document.getElementById(id); if (el) el.replaceChildren();
   }
   document.title='dmSetter';
@@ -19,7 +20,7 @@ function showLogin(message = '') {
   $('#login-email').focus();
 }
 async function logout() {
-  if ((state.scriptDirty || state.settingsDirty || state.onboardingDirty || messageDraftsPending()) && !confirm('Log out and leave unsaved changes?')) return;
+  if ((state.versionNoteDirty || state.scriptDirty || state.settingsDirty || state.onboardingDirty || messageDraftsPending()) && !confirm('Log out and leave unsaved changes?')) return;
   const button = $('#logout-btn'); button.disabled = true;
   try {
     await api('/api/logout', { method: 'POST' });

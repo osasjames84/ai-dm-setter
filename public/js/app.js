@@ -10,6 +10,7 @@ function renderKillDot() {
   if (txt) txt.textContent = on ? 'AI paused' : 'AI active';
 }
 function renderAccount() {
+  enforceAccessControls();
   const me = state.me;
   if (!me) return;
   const name = me.account.name || me.user.email || 'My account';
@@ -29,12 +30,14 @@ async function loadSettings() {
 }
 
 window.addEventListener('beforeunload', (e) => {
-  if (state.scriptDirty || state.settingsDirty || state.onboardingDirty || messageDraftsPending()) { e.preventDefault(); e.returnValue = ''; }
+  if (state.versionNoteDirty || state.scriptDirty || state.settingsDirty || state.onboardingDirty || messageDraftsPending()) { e.preventDefault(); e.returnValue = ''; }
 });
 
 /* ============================== poll loop ============================== */
 setInterval(() => {
   if (!state.authenticated || document.hidden || $('#app').classList.contains('hidden')) return;
+  if(state.eventsConnected && Date.now()-state.lastFallbackPoll<30000)return;
+  state.lastFallbackPoll=Date.now();
   // Never overwrite the settings baseline while the owner is mid-edit on a page
   // that renders from it — a save from another tab would silently replace his work.
   const editing = state.route === 'onboarding' || (state.route === 'prompt' && state.scriptDirty) || (state.route === 'settings' && state.settingsDirty);
@@ -53,6 +56,7 @@ async function boot() {
   await refreshBadge();
   loadIgStatus(); // fire-and-forget: populates state.igStatus so the sidebar dot can show app-wide
   messagesScaffold();
+  startLiveEvents();
   renderNav();
   const callback=new URLSearchParams(location.search);
   if(callback.has('connect_error')) toast('Instagram connection failed: '+callback.get('connect_error'),'err');

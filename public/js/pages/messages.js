@@ -494,6 +494,7 @@ function renderProspect() {
     '<div class="name-row"><input id="fname-input" placeholder="First name" value="' + esc(c.display_name || '') + '"></div>' +
     '<div class="draft-actions" style="margin-top:8px"><button class="btn btn-primary btn-sm" id="fname-save">Save</button></div></div>' +
 
+    profileHtml(c.profile) +
     '<div class="info-section-title">Conversation status</div>' +
     '<div class="info-card"><div class="info-hint">' + esc(noteText) + '</div></div>' +
 

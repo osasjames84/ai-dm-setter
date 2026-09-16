@@ -1,0 +1,23 @@
+import vm from 'node:vm';
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+let count=0;const test=(name,fn)=>{fn();console.log('PASS '+name);count++;};
+const escape=s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+const views=vm.createContext({esc:escape});vm.runInContext(fs.readFileSync(new URL('../js/pages/insights.js',import.meta.url),'utf8'),views);
+test('Profile empty state is explicit',()=>assert.match(views.profileHtml(null),/No profile has been extracted/));
+test('Profile text is escaped and fields are visible',()=>{const html=views.profileHtml({goal:'<img onerror=x>',blocker:'Time',budget_signal:'Unknown',objections:['<script>'],facts:['Shop owner'],next_step_status:'Asked for link',updated_at:'today'});assert.ok(!html.includes('<img'));assert.match(html,/&lt;script&gt;/);assert.match(html,/Shop owner/);assert.match(html,/Asked for link/);});
+test('Analytics preserves missing versus zero rates',()=>{const html=views.versionTable([{version:1,booked_rate:null},{version:2,booked_rate:0}]);assert.match(html,/—/);assert.match(html,/0%/);});
+test('Tables escape backend labels and values',()=>assert.ok(!views.dataTable(['<script>'],[['<svg onload=x>']]).includes('<svg')));
+const connections=[];class Source{constructor(url){this.url=url;this.listeners={};connections.push(this);}addEventListener(type,fn){this.listeners[type]=fn;}close(){this.closed=true;}}
+const status={textContent:''};const doc={hidden:false,addEventListener(){},getElementById(){return {};},querySelectorAll(){return [];}};
+const ctx=vm.createContext({state:{authenticated:true,sessionEpoch:1,route:'messages',me:{account:{access_status:'active'}}},EventSource:Source,MutationObserver:class{observe(){}},document:doc,$:()=>status,clearTimeout(){},setTimeout:fn=>{ctx.pending=fn;return 1;},loadIdentity:async()=>({}),showLogin(){},toast(){}});
+vm.runInContext(fs.readFileSync(new URL('../js/realtime.js',import.meta.url),'utf8'),ctx);
+let refresh=[];ctx.refreshVisibleData=async type=>refresh.push(type);
+test('SSE hello marks connection live',()=>{ctx.startLiveEvents();connections[0].listeners.hello();assert.equal(ctx.state.eventsConnected,true);});
+test('Unknown and malformed events are ignored',()=>{connections[0].listeners.change({data:'bad'});connections[0].listeners.change({data:'{"type":"unknown"}'});assert.equal(ctx.pending,undefined);});
+test('Settings changes survive event coalescing',()=>{connections[0].listeners.change({data:'{"type":"settings"}'});connections[0].listeners.change({data:'{"type":"message"}'});ctx.pending();assert.equal(refresh.at(-1),'settings');});
+test('Connection errors enable polling fallback',()=>{connections[0].onerror();assert.equal(ctx.state.eventsConnected,false);});
+test('Restart closes the previous stream',()=>{ctx.startLiveEvents();assert.equal(connections[0].closed,true);});
+test('Old session stream events cannot refresh a new session',()=>{const before=refresh.length;ctx.state.sessionEpoch++;connections[1].listeners.hello();assert.equal(refresh.length,before);});
+test('Logout cleanup closes the stream',()=>{ctx.stopLiveEvents();assert.equal(connections[1].closed,true);assert.equal(ctx.state.eventsConnected,false);});
+console.log(`${count} catch-up checks passed.`);

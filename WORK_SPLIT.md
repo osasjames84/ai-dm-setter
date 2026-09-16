@@ -244,3 +244,118 @@ POST /webhook/meta/data-deletion      Meta's data deletion callback (signed_requ
 Booking links the AI sends carry ?utm_content=<conversation id>; Calendly bookings match on it first (E.12).
 Inbound photos from leads arrive as "[photo: one-line description]" when image_vision is on (E.10).
 ```
+
+
+## Shipped backend contract appendix (d4b61c6)
+
+Copied from beta/backend for frontend integration. The day 11–17 additions extend the original roadmap. Payments remain external; no Stripe. The release gates above still apply where shipped behavior is weaker.
+
+## Day 2 contract additions (shipped on beta/backend; Astra's requests from CONTRACT_REQUESTS.md)
+
+```
+GET  /api/me                          user gains "is_platform_admin": bool; account.access_status is pending|active|paused (no plan/trial fields)
+
+Platform admin (JD only; 403 for everyone else)
+GET  /api/admin/accounts              → [ { "id", "name", "access_status", "owner_email", "users", "conversations", "last_login_at", "instagram_business_id", "created_at" } ]
+PATCH /api/admin/accounts/:id/access  { "status": "pending"|"active"|"paused" } → { "ok", "id", "access_status" }   (audited)
+GET  /api/admin/accounts/:id/usage    → same shape as /api/usage
+GET  /api/admin/accounts/:id/audit    → [ { "action": "access:paused"|"access:active"|"team:invite"|"team:remove", "detail", "actor_user_id", "at" } ]
+
+Usage (own account)
+GET  /api/usage                       → { "month": { "calls", "ai_messages", "input_tokens", "output_tokens", "cost_usd", "conversations", "bookings" }, "daily": [ { "day", "calls", "input_tokens", "output_tokens", "cost_usd" } ], "note" }
+                                        cost_usd is an estimate at Anthropic list prices (there is no gbp field)
+
+Team (owner role only for invite/remove)
+GET  /api/team                        → [ { "id", "email", "role": "owner"|"setter", "accepted": bool, "created_at", "last_login_at" } ]
+POST /api/team/invite                 { "email", "role" } → { "ok": true }    (409 if the email already has a login; sends a sign-in link)
+DELETE /api/team/:id                  → { "ok": true }                        (400 when removing yourself)
+
+Access enforcement
+- pending / paused accounts get 403 with a plain-sentence error on: send, request-draft, preview, approve, send-all, content analyze/more.
+- The scheduler treats a non-active account as kill-switched, and deliver() refuses sends for it, so queued follow-ups and sequences never go out either.
+- Frontend: show a banner from account.access_status; the AI Preview and Approve buttons should be disabled with the same wording when not active.
+```
+
+## Days 3 to 5 contract notes (shipped on beta/backend)
+
+```
+GET  /api/templates                   → [ { "id", "name", "description", "sections": {…} } ]   five templates: fitness-coach, online-course, agency, ecommerce, consultant
+POST /api/settings/apply-template     { "id", "only_empty": true } → { "ok", "filled": [...] }   also sets settings.template_id
+GET  /api/script/assembled            → { "text" }
+GET  /api/script/checks               → [ { "section", "level": "error"|"warn", "message" } ]   section can also be "next_step" or "coach_name"; errors block go-live
+GET  /api/onboarding                  → { "steps": { instagram, template, sections, next_step, test_drive, live }, "access_status" }
+POST /api/onboarding/go-live          → { "ok": true } | 400 { "error", "checks": [errors] } | 403 when not active
+
+New settings keys (all strings, PUT /api/settings as usual):
+  template_id, next_step_type ("call"|"checkout"|"form"|"human"), next_step_link, currency ("GBP"), timezone, country, test_drive_passed_at
+  Calls use calendar_link; checkout/form use next_step_link; "human" needs no link.
+
+New accounts start with EMPTY script sections (no starter seeded): the wizard applies a template. The knowledge base is per account.
+Calendly: each account has its own token/availability; webhook URL is /webhook/calendly/<account id> (the first account keeps /webhook/calendly).
+```
+
+## Days 6 to 10 contract notes (shipped on beta/backend)
+
+```
+Instagram (per account)
+GET  /auth/instagram/start            → 302 to Instagram login (needs IG_APP_ID + IG_APP_SECRET on the server; 503 page otherwise)
+GET  /auth/instagram/callback         → 302 /?connected=1 | /?connect_error=<message>
+POST /api/instagram/disconnect        → { "ok" }   owner only; turns the kill switch on
+/api/me.instagram and /api/instagram/status now carry:
+  { connected, username, business_id, needs_reconnect, expires_at, via: "oauth"|"env"|null, oauth_available, connect_url: "/auth/instagram/start"|null, signature_verified }
+  plus on /status: webhook_url, verify_token_set, auth_error, account (live Graph check)
+Tokens refresh themselves daily; a failed refresh sets needs_reconnect (show the reconnect banner).
+
+Test drive (async; poll)
+POST /api/onboarding/test-drive       { "persona_ids": [...] | omitted for the default 5 } → 202 job
+       job = { id, status: "running"|"done"|"error", passed: bool|null, started_at, finished_at, error,
+               runs: [ { persona: { id, name, handle }, status, transcript: [ { role, text } ], final_stage, flagged, flag_reason, verdict: "pass"|"warn"|"fail"|null, notes: [..] } ] }
+       ?wait=1 blocks up to 90s and returns the finished job (old synchronous contract). 409 while one is running, 400 when the script has error-level checks, 503 without AI.
+GET  /api/onboarding/test-drive       → [ jobs, newest first ]
+GET  /api/onboarding/test-drive/:id   → job
+A passed job sets settings.test_drive_passed_at (onboarding step test_drive turns true).
+Persona ids: warm_keyword, price_shock (alias price_hunter), think_about_it, broke_student (alias broke), no_time, skeptic, diy, ghost, dream_buyer, tirekicker, under_18 (alias underage).
+
+Account data
+GET    /api/account/export            → JSON download of everything the account owns (owner only)
+DELETE /api/account                   { "confirm": "<owner email>" } → { "ok" }; logs the user out. Not allowed on the first account.
+DELETE /api/admin/accounts/:id        → { "ok" }   platform admin
+GET    /api/admin/ops                 → { sentry, offsite_backups, log_format, instagram_oauth, signature_verified, email, last_backup, accounts: [{access_status, n}], instagram_accounts: [{status, n}] }
+```
+
+Server env (all optional): IG_APP_ID, IG_APP_SECRET (Instagram login + signature checks), TOKEN_ENC_KEY (64 hex chars; auto-generated into DATA_DIR/.token_key otherwise), SENTRY_DSN, LOG_FORMAT=json, BACKUP_S3_BUCKET / BACKUP_S3_ACCESS_KEY / BACKUP_S3_SECRET_KEY (+ BACKUP_S3_ENDPOINT, BACKUP_S3_REGION, BACKUP_S3_PREFIX).
+`npm test` boots the server on a scratch folder and runs the tenant isolation suite.
+
+## Days 11 to 17 contract notes (shipped on beta/backend)
+
+```
+Inbox
+GET  /api/conversations               rows gain: unread (int, lead messages since last_seen_at), waiting_since (iso|null: lead spoke last, nobody answered)
+POST /api/conversations/:id/seen      → { "ok" }
+GET  /api/events                      server-sent events, cookie auth. "hello" on open, then
+                                      event: change  data: { "type": "message"|"draft"|"conversation"|"settings", "id": conversation id|null }
+                                      Refetch what the page shows on each event; keep the poll as a fallback at 30s when the stream is open.
+Conversation rows carry "profile": { goal, blocker, budget_signal, objections[], facts[], next_step_status, updated_at } | null   (E.9; show it in the prospect panel)
+
+Prompt versions (E.8)
+PUT  /api/settings                    response gains "prompt_version": n   (a save that changes any section records a new version)
+GET  /api/prompt/versions             → [ { id, version, note, created_by, created_at, current, ai_messages, conversations, booked, booked_rate } ]
+GET  /api/prompt/versions/:version    → { …, "sections": { prompt_persona … } }
+PUT  /api/prompt/versions/:version    { "note" } → { "ok" }
+POST /api/prompt/versions/:version/restore → { "ok", "version", "settings" }   (records a new version "restored from vN")
+
+Analytics (E.15)
+GET  /api/analytics?days=30           → { window_days, leads: { total, keyword, instagram, simulator }, outcomes: { call_booked, sale, routed, dead },
+                                          conversion: { ai_only: { conversations, booked, rate }, human_assisted: {…} }, by_version: [...],
+                                          lead_messages_by_hour: [24 ints], median_hours_to_booking, revenue: { sales, client_value, currency, estimated } }
+New settings: client_value (number as string), groq_api_key (secret; settings expose groq_key_set), lead_profiles "1"|"0", image_vision "1"|"0"
+
+Admin (F.4)
+GET  /api/admin/accounts/:id/overview → { account, users, settings (subset), script: { checks, version, sections_filled, sections_total }, instagram, counts, recent_conversations (no text), audit }
+
+Other
+GET  /health                          → { ok, uptime_s }
+POST /webhook/meta/data-deletion      Meta's data deletion callback (signed_request) — configure its URL in the Meta app
+Booking links the AI sends carry ?utm_content=<conversation id>; Calendly bookings match on it first (E.12).
+Inbound photos from leads arrive as "[photo: one-line description]" when image_vision is on (E.10).
+```

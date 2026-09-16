@@ -765,6 +765,7 @@ function syncSettingsFromDom() {
   const val = (id) => { const el = document.getElementById(id); return el ? el.value : undefined; };
   const checked = (id) => { const el = document.getElementById(id); return el && el.querySelector('input') ? el.querySelector('input').checked : undefined; };
   const set = (key, v) => { if (v !== undefined) s[key] = v; };
+  if($('#set-profiles')){const {groq_api_key,...values}=insightSettingsValues();Object.assign(s,values);state.groqDraft=$('#set-groq').value;state.groqClearDraft=$('#set-groq-clear').checked;}
   set('calendar_link', val('set-calendar'));
   set('notify_emails', val('set-notify'));
   { const tok = (val('set-calendly-token') || '').trim(); if (tok) s.calendly_token = tok; }

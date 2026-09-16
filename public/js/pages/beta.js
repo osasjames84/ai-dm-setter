@@ -149,10 +149,12 @@ async function renderTeam() {
 async function renderOperator() {
   const host=$('#operator-page');host.innerHTML='<h1>Account access</h1>';
   if(!state.me?.user?.is_platform_admin){host.textContent='This page is available only to the platform operator.';return;}
+  const ops=document.createElement('div');host.append(ops);showOperations(ops);
   const content=document.createElement('div');host.append(content);content.textContent='Loading accounts…';
   try{
     const accounts=await api('/api/admin/accounts');if(!Array.isArray(accounts))throw new Error('Could not read accounts.');if(!content.isConnected)return;
-    content.innerHTML=accounts.map(a=>'<article class="card operator-account"><h2>'+esc(a.name)+'</h2><p>'+esc(a.owner_email||a.id)+' · '+esc(a.access_status)+'</p><button class="btn btn-ghost" data-access="active" data-account="'+esc(a.id)+'">Activate</button><button class="btn btn-ghost" data-access="paused" data-account="'+esc(a.id)+'">Pause</button><button class="btn btn-ghost" data-usage="'+esc(a.id)+'">View AI usage</button><p role="status" class="operator-status"></p><div class="usage-result"></div></article>').join('');
+    content.innerHTML=accounts.map(a=>'<article class="card operator-account"><h2>'+esc(a.name)+'</h2><p>'+esc(a.owner_email||a.id)+' · '+esc(a.access_status)+'</p><button class="btn btn-ghost" data-access="active" data-account="'+esc(a.id)+'">Activate</button><button class="btn btn-ghost" data-access="paused" data-account="'+esc(a.id)+'">Pause</button><button class="btn btn-ghost" data-usage="'+esc(a.id)+'">View AI usage</button><button class="btn btn-ghost" data-overview="'+esc(a.id)+'">Account overview</button><p role="status" class="operator-status"></p><div class="account-overview"></div><div class="usage-result"></div></article>').join('');
+    content.querySelectorAll('[data-overview]').forEach(button=>button.onclick=()=>showAccountOverview(button.dataset.overview,button.closest('article').querySelector('.account-overview')));
     content.querySelectorAll('[data-access]').forEach(button=>button.addEventListener('click',async()=>{
       const a=accounts.find(a=>a.id===button.dataset.account);if(!confirm((button.dataset.access==='active'?'Activate ':'Pause ')+a.name+'? Activation does not turn on automation.'))return;
       button.disabled=true;try{await api('/api/admin/accounts/'+encodeURIComponent(a.id)+'/access',{method:'PATCH',body:{status:button.dataset.access}});await loadIdentity();if(content.isConnected && state.route==='operator')await renderOperator();}catch(err){button.closest('article').querySelector('.operator-status').textContent=err.message;button.disabled=false;}
