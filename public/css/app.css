@@ -1197,3 +1197,32 @@ html[data-theme="light"] .check-warn { color:#805000; }
 .setup-field .set-help { display:block; font-weight:400; }
 #setup-status { margin-top:16px; color:var(--muted); }
 @media(max-width:680px) { .setup-card { padding:16px; } .setup-steps .btn { min-height:44px; } }
+
+/* Beta setup, team and operator surfaces retain the original theme. */
+#goal-form,#invite-form { display:grid;gap:12px;max-width:620px; }
+.team-row { display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px;margin:16px 0;overflow-wrap:anywhere; }
+.operator-account { padding:24px;margin:20px 0;overflow-wrap:anywhere; }
+.operator-account .btn { margin:8px 8px 8px 0; }
+.test-runs { display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px; }
+.test-run { padding:16px;min-width:0;overflow-wrap:anywhere;max-height:500px;overflow:auto; }
+.test-ai { border:1px solid var(--amber);border-radius:10px;padding:10px; }
+.conv-row.unread .conv-name,.conv-row.unread .conv-preview { font-weight:700;color:var(--text); }
+.unread-count { border-radius:20px;background:var(--accent);color:white;padding:2px 7px;font-size:11px; }
+.info-toggle,.info-close { display:none; }
+@media(max-width:980px) {
+ .info-toggle,.info-close { display:inline-flex; }
+ .pane-info.info-open { display:block;position:fixed;z-index:100;bottom:0;left:0;right:0;width:auto;height:78dvh;max-height:78dvh;overflow:auto;background:var(--bg);border:1px solid var(--border2);border-radius:20px 20px 0 0;box-shadow:0 -20px 80px #0008;padding:20px; }
+}
+@media(max-width:680px) {
+ #app,#main,#view-messages { height:100dvh; }
+ input,textarea,select { font-size:16px !important; }
+ button,.btn,.icon-btn { min-height:44px; }
+ .thread-head { gap:8px; }.thread-title{min-width:0;overflow:hidden;text-overflow:ellipsis;}
+ .test-runs { grid-template-columns:1fr; }
+ .operator-account {padding:16px;}
+}
+
+[hidden] { display:none !important; }
+
+.chips { height:auto; min-height:139px; }
+@media(max-width:680px) { .chips {flex-wrap:nowrap;overflow-x:auto;min-height:68px;} .chips .chip {flex-shrink:0;} }

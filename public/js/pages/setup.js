@@ -5,7 +5,7 @@ const SETUP_STEPS = [
 ];
 const SETUP_FIELDS = [
   ['prompt_offer','Your offer','What do you sell, who is it for, and what can customers expect?'],
-  ['prompt_voice','Your voice','How should messages sound? Include a few examples.'],
+  ['prompt_persona','Character and personality','Who are you, and how should customers be treated?'],
   ['prompt_qualification','Qualification','What do you need to know before recommending the next step?'],
   ['prompt_booking','Next-step sequence','When and how should the next step be offered and confirmed?'],
   ['prompt_hard_rules','Hard rules','What must the AI never say or do?'],
@@ -63,7 +63,11 @@ async function loadScriptChecks(root, summary) {
     if(!root.isConnected) return;
     if(!Array.isArray(checks)) throw new Error('Could not read script checks.');
     root.querySelectorAll('[data-check-for]').forEach(el=>drawChecks(el,checks.filter(c=>c.section===el.dataset.checkFor)));
-    if(summary) summary.textContent=checks.length ? checks.length+' checks to review. These checks apply to saved text.' : 'No issues reported for the saved script.';
+    if(summary) {
+      const visibleKeys=new Set([...root.querySelectorAll('[data-check-for]')].map(el=>el.dataset.checkFor));
+      const other=checks.filter(c=>!visibleKeys.has(c.section)).map(c=>c.message).join(' ');
+      summary.textContent=(checks.length ? checks.length+' checks to review. These checks apply to saved text. ' : 'No issues reported for the saved script. ')+other;
+    }
     return checks;
   } catch(err) { if(summary?.isConnected) summary.textContent=setupError(err); }
 }
@@ -112,9 +116,9 @@ function drawSetup() {
   }));
   const body=$('#setup-step-body');
   if(step===0) {
-    const connected=state.me?.instagram?.connected;
-    body.innerHTML='<h2>Connect Instagram</h2><p>'+ (connected?'Instagram is connected. Continue to choose a template.':'Your Instagram connection is managed in Settings. Connect your account before going live.')+'</p><button class="btn btn-ghost" id="setup-settings">Open Settings</button><button class="btn btn-primary" id="setup-next">Choose a template</button>';
-    $('#setup-settings').addEventListener('click',()=>go('settings')); $('#setup-next').addEventListener('click',()=>{state.onboardingStep=1;drawSetup();});
+    body.innerHTML=instagramCard(state.me?.instagram)+'<button class="btn btn-primary" id="setup-next">Choose a template</button>';
+    bindInstagram(body,async()=>{await loadIdentity();await renderOnboarding();});
+    $('#setup-next').addEventListener('click',()=>{state.onboardingStep=1;drawSetup();});
   } else if(step===1) {
     body.innerHTML='<h2>Choose a starting point</h2><p>Templates only fill empty sections. Anything you have written stays in place.</p><div id="setup-templates" class="template-picker"></div><button class="btn btn-ghost" id="setup-write">Write your script</button>';
     renderTemplatePicker($('#setup-templates'),async()=> { const p=await api('/api/onboarding'); state.onboarding=p; updateSetupProgress(); });
@@ -136,10 +140,8 @@ function drawSetup() {
     });
     loadScriptChecks(body,$('#setup-check-status'));
   } else if(step===3) {
-    body.innerHTML='<h2>Choose the next step</h2><p>Your next step can be a call, purchase, form or handoff to a person. Describe it in your next-step sequence.</p><p class="set-help">Dedicated goal and link settings will be available when the server supports them. Setup is not marked complete here.</p><button class="btn btn-ghost" id="setup-open-script">Open full script</button>';
-    $('#setup-open-script').addEventListener('click',()=>go('prompt'));
+    renderNextStep(body);
   } else {
-    body.innerHTML='<h2>Test before going live</h2><p>Try individual messages in AI Preview now. The five-lead test drive and go-live controls arrive with the next integration.</p><p class="set-help">A preview does not complete this setup step or turn on automation.</p><button class="btn btn-ghost" id="setup-preview">Open AI Preview</button>';
-    $('#setup-preview').addEventListener('click',()=>go('prompt'));
+    renderTestDrive(body);
   }
 }

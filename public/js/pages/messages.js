@@ -34,10 +34,12 @@ function renderChips() {
   '<button class="chip' + (state.filterFlagged ? ' on' : '') + '" data-chip="__flag">Flagged</button>' +
   '<button class="chip' + (state.filterMode === 'on' ? ' on' : '') + '" data-chip="__ai_on">AI On</button>' +
   '<button class="chip' + (state.filterMode === 'off' ? ' on' : '') + '" data-chip="__ai_off">AI Off</button>' +
-  '<button class="chip' + (state.sortAttention ? ' on' : '') + '" data-chip="__priority">Priority</button>';
+  '<button class="chip' + (state.sortAttention ? ' on' : '') + '" data-chip="__priority">Priority</button>'+
+  '<button class="chip'+(state.sortWaiting?' on':'')+'" data-chip="__waiting">Waiting longest</button>';
   box.querySelectorAll('[data-chip]').forEach((b) => b.addEventListener('click', () => {
-    if (b.dataset.chip === '__priority') {
-      state.sortAttention = !state.sortAttention; if (state.sortAttention) state.filterFlagged = false;
+    if (b.dataset.chip === '__waiting') { state.sortWaiting=!state.sortWaiting; state.sortAttention=false;
+    } else if (b.dataset.chip === '__priority') {
+      state.sortWaiting=false; state.sortAttention = !state.sortAttention; if (state.sortAttention) state.filterFlagged = false;
     } else if (b.dataset.chip === '__flag') {
       state.filterFlagged = !state.filterFlagged; state.filterMode = ''; if (state.filterFlagged) state.sortAttention = false;
     } else if (b.dataset.chip === '__ai_on' || b.dataset.chip === '__ai_off') {
@@ -80,6 +82,7 @@ async function loadConvs() {
   if (state.filterFlagged) rows = rows.filter((r) => r.needs_human);
   if (state.filterMode === 'on') rows = rows.filter((r) => r.mode === 'autopilot');
   if (state.filterMode === 'off') rows = rows.filter((r) => r.mode !== 'autopilot');
+  if(state.sortWaiting) rows=rows.slice().sort((a,b)=>(Date.parse(a.waiting_since)||Infinity)-(Date.parse(b.waiting_since)||Infinity));
   if (state.sortAttention) rows = rows.slice().sort((a, b) => (b.attention || 0) - (a.attention || 0));
   state.convs = rows;
   renderConvList();
@@ -152,11 +155,12 @@ function renderConvList() {
   }
   const sel = state.selectMode;
   list.innerHTML = state.convs.map((c, i) => {
+    const unread=Math.max(0,Number(c.unread)||0);
     const flag = c.needs_human ? '<span class="flag-dot"></span>' : '';
     const auto = c.mode === 'autopilot';
     const picked = sel && state.selected.has(c.id);
     const priorityCue = state.sortAttention && i < 3 ? '<span class="priority-cue" title="High priority">' + icon('bolt', 12) + '</span>' : '';
-    return '<div class="conv-row' + (!sel && c.id === state.activeId ? ' sel' : '') + (picked ? ' picked' : '') + '" data-conv="' + c.id + '">' +
+    return '<div class="conv-row' + (!sel && c.id === state.activeId ? ' sel' : '') + (picked ? ' picked' : '') + (unread?' unread':'') + '" data-conv="' + c.id + '">' +
       (sel ? '<span class="conv-check' + (picked ? ' on' : '') + '">' + (picked ? icon('check', 13) : '') + '</span>' : '') +
       avatarHtml(c.handle, c.display_name, 40, flag) +
       '<div class="conv-mid"><div class="conv-name-row"><span class="conv-name">' + priorityCue + esc(c.display_name || c.handle) + '</span>' +
@@ -165,7 +169,7 @@ function renderConvList() {
       (c.call_time && new Date(c.call_time).getTime() > Date.now() ? '<span title="Call: ' + esc(callTimeFmt(c.call_time)) + '" style="display:inline-flex;color:var(--muted);margin-left:6px;vertical-align:middle">' + icon('calendar', 13) + '</span>' : '') +
       '</div>' +
       '<div class="conv-preview">' + esc(c.last_text || 'No messages yet') + '</div></div>' +
-      '<div class="conv-right">' +
+      '<div class="conv-right">' + (unread?'<span class="unread-count" aria-label="'+unread+' unread messages">'+unread+'</span>':'') +
       (sel ? '' : ('<span class="mini-switch-wrap" data-togglewrap>' + switchHtml(auto, '', 'data-modetoggle="' + c.id + '"') +
         '<span class="mini-label' + (auto ? ' ai' : '') + '">' + (auto ? 'AI' : 'Off') + '</span></span>')) +
       '</div></div>';
@@ -178,6 +182,7 @@ function renderConvList() {
       return;
     }
     if (e.target.closest('[data-togglewrap]')) return;
+    state.infoOpen=false;
     state.activeId = row.dataset.conv;
     $('#view-messages').classList.add('thread-open');
     renderConvList();
@@ -190,6 +195,8 @@ function renderConvList() {
       loadConvs(); if (id === state.activeId) loadThread(id);
     } catch (err) { toast(err.message, 'err'); loadConvs(); }
   }));
+  const unreadTotal=state.convs.reduce((n,c)=>n+(Number(c.unread)||0),0);
+  document.title=(unreadTotal?'('+unreadTotal+') ':'')+'dmSetter';
   list.scrollTop = scroll;
 }
 async function loadThread(id) {
@@ -199,6 +206,13 @@ async function loadThread(id) {
   state.thread = data;
   renderThread();
   renderProspect();
+  const unread=state.convs.find(c=>String(c.id)===String(id))?.unread;
+  const receipt=id+':'+String(data.messages?.at(-1)?.id||'');
+  if(unread>0 && state.route==='messages' && !document.hidden && !state.readReceipts.has(receipt)) {
+    state.readReceipts.add(receipt);
+    try {await api('/api/conversations/'+encodeURIComponent(id)+'/seen',{method:'POST'});await loadConvs();}
+    catch(err){state.readReceipts.delete(receipt);if(err.status!==404)toast(err.message,'err');}
+  }
 }
 function renderThread() {
   const pane = $('#pane-thread');
@@ -227,7 +241,7 @@ function renderThread() {
     pane.innerHTML =
       '<div class="thread-head"><button class="mobile-back" id="mobile-back" aria-label="Back to conversations">&larr;</button>' + avatarHtml(c.handle, c.display_name, 36) +
       '<div class="thread-title">' + esc(c.display_name || c.handle) + '</div>' +
-      stageBadge(c.stage) + '</div>' +
+      stageBadge(c.stage) + '<button class="btn btn-ghost info-toggle" id="info-toggle" aria-controls="pane-info">Details</button></div>' +
       (c.needs_human ? '<div class="flag-banner">' + icon('flag', 15) + '<span class="fb-txt">Flagged for review' + (c.needs_human_reason ? ' &mdash; ' + esc(c.needs_human_reason) : '') + '</span>' +
         '<button class="btn btn-ghost btn-sm" id="handled-btn">Mark handled</button></div>' : '') +
       '<div class="msgs-scroll" id="msgs-scroll"></div>' +
@@ -364,6 +378,7 @@ function renderDraftZone() {
 function wireThread() {
   const c = state.thread.conversation;
   const isSim = c.channel === 'sim';
+  const details=$('#info-toggle'); if(details)details.onclick=()=>{state.infoOpen=true;renderProspect();$('#pane-info').classList.add('info-open');$('#info-close')?.focus();};
   const mobileBack = $('#mobile-back');
   if (mobileBack) mobileBack.addEventListener('click', () => {
     state.activeId = null; state.thread = null;
@@ -521,3 +536,13 @@ function renderProspect() {
     catch (e) { toast(e.message, 'err'); }
   });
 }
+
+const renderProspectBase=renderProspect;
+renderProspect=function(){
+  renderProspectBase();const pane=$('#pane-info');if(!pane || !state.activeId)return;
+  pane.classList.toggle('info-open',state.infoOpen);
+  if(pane.querySelector('#info-close'))return;
+  const close=document.createElement('button');close.id='info-close';close.className='btn btn-ghost info-close';close.textContent='Close details';
+  close.onclick=()=>{state.infoOpen=false;pane.classList.remove('info-open');$('#info-toggle')?.focus();};pane.prepend(close);
+};
+document.addEventListener('keydown',e=>{if(e.key==='Escape' && state.infoOpen){state.infoOpen=false;$('#pane-info')?.classList.remove('info-open');$('#info-toggle')?.focus();}});

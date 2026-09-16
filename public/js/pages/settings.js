@@ -2,53 +2,13 @@
 /* ============================== settings ============================== */
 /** SetDM-style Instagram connection card + the exact values to paste into Meta. */
 function igSectionHtml(st) {
-  const IG_GRAD = 'background:linear-gradient(135deg,#f58529,#dd2a7b,#8134af);color:#fff';
-  let conn;
-  if (!st) {
-    conn = '<div class="ig-conn">Checking connection…</div>';
-  } else if (st.account) {
-    conn = '<div class="ig-conn ok"><div><div class="sr-label">Connected as</div>' +
-      '<div class="sr-sub mono">Instagram ID: ' + esc(st.account.id || '') + '</div></div>' +
-      '<span class="ig-handle">@' + esc(st.account.username || 'account') + '</span></div>';
-  } else if (st.configured) {
-    conn = '<div class="ig-conn warn">Credentials are set but the token check failed' +
-      (st.error ? ' (' + esc(st.error) + ')' : '') + '. Re-check IG_PAGE_TOKEN and IG_BUSINESS_ID, then Refresh Connection.</div>';
-  } else {
-    conn = '<div class="ig-conn">Not connected. Set <span class="mono">IG_PAGE_TOKEN</span>, <span class="mono">IG_VERIFY_TOKEN</span> and ' +
-      '<span class="mono">IG_BUSINESS_ID</span> in the server environment, then Refresh Connection. The simulator works without this.</div>';
-  }
-  const url = st && st.webhook_url ? st.webhook_url : '…';
-  const perms = st && st.permissions ? st.permissions.join(', ') : 'instagram_business_manage_messages, pages_manage_metadata';
-  const authAlert = st && st.auth_error ? '<div class="ig-auth-alert">' + icon('alert', 17) +
-    '<span>Instagram disconnected — the access token was rejected (expired or revoked). Reconnect by generating a fresh token in your Meta app and updating IG_PAGE_TOKEN.' +
-    (st.auth_error.detail ? '<span class="ig-auth-detail">' + esc(st.auth_error.detail) + '</span>' : '') +
-    '</span></div>' : '';
-  // Without IG_APP_SECRET the server cannot verify who sent a webhook: it
-  // accepts them so DMs keep flowing, but anyone with the URL could forge one.
-  const secretAlert = st && st.configured && st.signature_verified === false ? '<div class="ig-auth-alert">' + icon('alert', 17) +
-    '<span><b>Instagram webhooks are not being verified.</b> Add <span class="mono">IG_APP_SECRET</span> on Railway (Meta app → Settings → Basic → App Secret, then "+ New Variable") so forged lead messages are rejected. Until then anyone who finds the webhook URL could make the AI reply.</span></div>' : '';
-  return '<div class="set-sub">' +
-    '<div class="set-sub-head"><span class="icon-chip" style="' + IG_GRAD + '">' + icon('instagram', 15) + '</span>' +
-    '<div class="sc-title-sub"><span class="st">Instagram Account</span><span class="sc-s">Connect to enable AI DM automation</span></div></div>' +
-    '<div style="height:12px"></div>' +
-    secretAlert +
-    authAlert +
-    conn +
-    '<div class="ig-btn-row"><button class="btn btn-ig-grad" id="ig-test">' + icon('refresh', 15) + 'Refresh Connection</button>' +
-    '<span class="set-help">Disconnect is managed by the account administrator.</span></div>' +
-    '<button class="btn btn-ghost btn-sm" id="ig-sync" style="width:100%;margin-top:8px">' + icon('chats', 14) + 'Sync existing conversations</button>' +
-    '<div class="field-label" style="margin-top:16px">Webhook callback URL</div>' +
-    '<div class="copy-field" data-copy="' + esc(url) + '"><span class="mono">' + esc(url) + '</span><button class="icon-btn" title="Copy">' + icon('copy', 15) + '</button></div>' +
-    '<div class="set-row" style="padding:12px 0 8px"><div><div class="sr-label">Verify token</div><div class="sr-sub">Value of IG_VERIFY_TOKEN — set it identically in the Meta webhook config</div></div>' +
-    '<span class="tag ' + (st && st.has_verify_token ? 'green' : '') + '">' + (st && st.has_verify_token ? 'Set' : 'Not set') + '</span></div>' +
-    '<div class="set-row" style="padding:8px 0"><div><div class="sr-label">Subscribe to field</div></div><span class="tag indigo">messages</span></div>' +
-    '<div class="field-label" style="margin-top:8px">Required permissions</div><div class="sr-sub mono">' + esc(perms) + '</div>' +
-    '</div>';
+  return instagramCard(state.me?.instagram || st);
 }
+
 let lastIgStatusAt = 0; // throttles the poll-loop refresh; direct calls (boot, Settings, Refresh Connection) stay immediate and reset the timer
 async function loadIgStatus() {
   lastIgStatusAt = Date.now();
-  try { state.igStatus = await api('/api/instagram/status'); }
+  try { await loadIdentity(); state.igStatus = await api('/api/instagram/status'); }
   catch (e) { state.igStatus = { configured: false, has_verify_token: false }; }
   renderNav(); // app-wide: surfaces the disconnected-dot on Settings regardless of current route
   if (state.route === 'settings') {
@@ -338,15 +298,7 @@ function renderSettings() {
   $('#settings-page').addEventListener('change', markSettingsDirty);
 
   /* ---- Instagram: Refresh Connection reuses loadIgStatus() ---- */
-  const igTest = $('#ig-test');
-  if (igTest) igTest.addEventListener('click', async () => {
-    igTest.disabled = true; igTest.innerHTML = icon('refresh', 15) + 'Refreshing…';
-    await loadIgStatus();
-    toast(state.igStatus && state.igStatus.account ? 'Connected as @' + state.igStatus.account.username
-      : state.igStatus && state.igStatus.configured ? 'Credentials set but token check failed' : 'Not connected yet');
-  });
-  const igDisc = $('#ig-disconnect');
-  if (igDisc) igDisc.addEventListener('click', () => toast('To disconnect, remove IG_PAGE_TOKEN from the server environment.'));
+  bindInstagram($('#settings-page'), loadIgStatus);
   const igSync = $('#ig-sync');
   if (igSync) igSync.addEventListener('click', async () => {
     const orig = igSync.innerHTML; igSync.disabled = true; igSync.innerHTML = icon('chats', 14) + 'Syncing your Instagram…';

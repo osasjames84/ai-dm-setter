@@ -39,3 +39,11 @@
 - Added five-step setup shell, server-derived progress/resume, template application and five-section editor with inline checks, save/discard protection and saved-progress refresh. OAuth, goal/link controls and test-drive/go-live remain later milestones.
 - Isolated development fixtures verified save/apply preservation, reload, checks, assembled panel and no captured browser errors; real backend verified unavailable fallback. Desktop visual check passed; mobile viewport override did not take effect, so mobile verification remains pending. Syntax and diff checks passed.
 - Backend unchanged and no fixtures shipped. Contract notes flag missing endpoints and new-account JD script defaults; no deployment or live-provider calls.
+
+## 2026-09-16: days six to twelve frontend and integration pass
+- Day 6: account-scoped Instagram card, connect/reconnect, real disconnect request, configuration-aware availability and OAuth return messages. Original styling retained.
+- Day 7: next-step goal/link editor, resumable async test-drive polling, five transcripts with assessments and amber AI borders, server-progress/access-gated go-live. Supports newly landed c075e28 job format as well as the agreed contract.
+- Days 8/9: JD-only Accounts screen with activation/pause confirmation and internal USD usage; real Team list/invite/removal; unread row/count/seen and waiting-longest contract wiring. No payment UI.
+- Day 10: mobile details bottom sheet, Escape/close focus return, 100dvh and 44px/16px controls; fixed overlapping filters. Populated 375px inbox and light-theme setup checked, no horizontal overflow, AI amber ring distinct from human messages.
+- Days 11/12 verification: real-backend next-step saving, team invitation and operator usage passed. Eight independent synthetic-account checks passed newest c075e28. Upstream 21-check isolation suite passed only after a scratch-only magic-link parser fix; unmodified suite fails setup. Fixtures validated unread acknowledgment, five test-drive transcripts, both job formats and disabled go-live for incomplete setup; no captured browser errors.
+- Not release complete: real Meta/AI integrations, unread backend and listed server-side release gates remain. Fixture code and test data stay outside repository. Backend files unchanged, no deployment, no live messaging or billing calls.

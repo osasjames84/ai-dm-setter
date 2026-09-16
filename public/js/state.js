@@ -16,6 +16,9 @@ const state = {
   filterFlagged: false,
   filterMode: '',
   sortAttention: false,
+  sortWaiting: false,
+  infoOpen: false,
+  readReceipts: new Set(),
   search: '',
   activeId: null,
   thread: null,        // { conversation, messages, pending_draft }

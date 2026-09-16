@@ -7,10 +7,12 @@ const NAV = [
   { id: 'drafts', label: 'Drafts', icon: 'inbox', badge: true },
   { id: 'prompt', label: 'Prompt', icon: 'filetext' },
   { id: 'content', label: 'Content', icon: 'bulb', pill: 'NEW' },
+  { id: 'team', label: 'Team', icon: 'chat' },
+  { id: 'operator', label: 'Accounts', icon: 'grid' },
   { id: 'settings', label: 'Settings', icon: 'gear' },
 ];
 function renderNav() {
-  $('#nav').innerHTML = NAV.map((n) => {
+  $('#nav').innerHTML = NAV.filter(n=>n.id!=='operator' || state.me?.user?.is_platform_admin).map((n) => {
     const badge = n.badge && state.drafts.length ? '<span class="nav-badge">' + state.drafts.length + '</span>' : '';
     const pill = n.pill ? '<span class="nav-pill">' + n.pill + '</span>' : '';
     const dot = n.id === 'settings' && state.igStatus && state.igStatus.auth_error ? '<span class="nav-dot" title="Instagram disconnected"></span>' : '';
@@ -29,7 +31,7 @@ function go(route) {
     state.scriptDirty = false; state.settingsDirty = false;
   }
   state.route = route;
-  ['onboarding', 'dashboard', 'messages', 'drafts', 'prompt', 'content', 'settings'].forEach((r) => {
+  ['onboarding', 'dashboard', 'messages', 'drafts', 'prompt', 'content', 'settings', 'team', 'operator'].forEach((r) => {
     $('#view-' + r).classList.toggle('hidden', r !== route);
   });
   // one-shot fadeUp on the view that just became visible (re-add to retrigger)
@@ -43,4 +45,6 @@ function go(route) {
   if (route === 'prompt') renderPrompt();
   if (route === 'content') renderContent();
   if (route === 'settings') renderSettings();
+  if (route === 'team') renderTeam();
+  if (route === 'operator') renderOperator();
 }

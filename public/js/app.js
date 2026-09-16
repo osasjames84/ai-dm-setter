@@ -20,7 +20,7 @@ function renderAccount() {
   $('#acc-sub').textContent = access === 'pending' ? 'Awaiting approval' : access === 'paused' ? 'Access paused' : ig.needs_reconnect ? 'Reconnect Instagram' : ig.connected ? 'Instagram connected' : 'Instagram not connected';
   $('#acc-sub').classList.toggle('connection-warning', !!ig.needs_reconnect);
   const banner = $('#account-access-banner');
-  banner.textContent = access === 'pending' ? 'Your account is awaiting approval. You can prepare your setup while you wait.' : access === 'paused' ? 'Account access is paused. You can still read your inbox. Contact JD to reactivate.' : '';
+  banner.textContent = access === 'pending' ? 'Your account is awaiting approval. You can prepare your setup while you wait.' : access === 'paused' ? 'Account access is paused. You can still read your inbox. Contact JD to reactivate.' : ig.needs_reconnect ? 'Instagram needs reconnecting. Open Settings to restore the connection.' : '';
   banner.classList.toggle('hidden', !banner.textContent);
   document.documentElement.classList.toggle('has-access-banner', !!banner.textContent);
 }
@@ -54,7 +54,11 @@ async function boot() {
   loadIgStatus(); // fire-and-forget: populates state.igStatus so the sidebar dot can show app-wide
   messagesScaffold();
   renderNav();
-  go(state.me?.onboarding_complete ? 'dashboard' : 'onboarding');
+  const callback=new URLSearchParams(location.search);
+  if(callback.has('connect_error')) toast('Instagram connection failed: '+callback.get('connect_error'),'err');
+  if(callback.has('connected')) toast('Instagram connection updated.');
+  go(callback.has('connected') || callback.has('connect_error') ? 'onboarding' : state.me?.onboarding_complete ? 'dashboard' : 'onboarding');
+  if(callback.has('connected') || callback.has('connect_error')) history.replaceState(null,'',location.pathname);
 }
 /* ============================== theme (light/dark) ============================== */
 function renderThemeToggle() {

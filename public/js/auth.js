@@ -10,9 +10,10 @@ function showLogin(message = '') {
   $('#login-sent').classList.add('hidden');
   $('#login-err').textContent = message;
   $('#login-retry').classList.add('hidden');
-  for (const id of ['onboarding-page','dash-page','view-messages','drafts-page','prompt-page','content-page','settings-page']) {
+  for (const id of ['team-page','operator-page','onboarding-page','dash-page','view-messages','drafts-page','prompt-page','content-page','settings-page']) {
     const el = document.getElementById(id); if (el) el.replaceChildren();
   }
+  document.title='dmSetter';
   $('#toasts').replaceChildren();
   if (typeof _hideXpop === 'function') _hideXpop();
   $('#login-email').focus();
