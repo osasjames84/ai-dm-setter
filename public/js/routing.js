@@ -7,6 +7,8 @@ const NAV = [
   { id: 'drafts', label: 'Drafts', icon: 'inbox', badge: true },
   { id: 'prompt', label: 'Prompt', icon: 'filetext' },
   { id: 'content', label: 'Content', icon: 'bulb', pill: 'NEW' },
+  { id: 'versions', label: 'Versions', icon: 'filetext' },
+  { id: 'analytics', label: 'Analytics', icon: 'grid' },
   { id: 'team', label: 'Team', icon: 'chat' },
   { id: 'operator', label: 'Accounts', icon: 'grid' },
   { id: 'settings', label: 'Settings', icon: 'gear' },
@@ -22,6 +24,8 @@ function renderNav() {
   $('#nav').querySelectorAll('[data-route]').forEach((b) => b.addEventListener('click', () => go(b.dataset.route)));
 }
 function go(route) {
+  if(state.versionSaving){toast('Please wait for the version save to finish.');return;}
+  if(state.versionNoteDirty){if(!confirm('Discard your unsaved version note?'))return;state.versionNoteDirty=false;}
   if(state.onboardingSaving){toast('Please wait for your setup changes to finish saving.');return;}
   if (route === state.route && (state.scriptDirty || state.settingsDirty || state.onboardingDirty)) return;
   if (route !== state.route) {
@@ -32,7 +36,7 @@ function go(route) {
     state.scriptDirty = false; state.settingsDirty = false;
   }
   state.route = route;
-  ['onboarding', 'dashboard', 'messages', 'drafts', 'prompt', 'content', 'settings', 'team', 'operator'].forEach((r) => {
+  ['onboarding', 'dashboard', 'messages', 'drafts', 'prompt', 'content', 'settings', 'team', 'operator', 'versions', 'analytics'].forEach((r) => {
     $('#view-' + r).classList.toggle('hidden', r !== route);
   });
   // one-shot fadeUp on the view that just became visible (re-add to retrigger)
@@ -48,4 +52,6 @@ function go(route) {
   if (route === 'settings') renderSettings();
   if (route === 'team') renderTeam();
   if (route === 'operator') renderOperator();
+  if (route === 'versions') renderVersions();
+  if (route === 'analytics') renderAnalytics();
 }

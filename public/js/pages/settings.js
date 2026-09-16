@@ -168,11 +168,12 @@ function renderSettings() {
     '<p class="set-help">Fallback message used when no reason-specific message is set.</p></div>' +
     '<div class="set-two">' + flagGrid + '</div></div>' +
 
+    insightSettingsHtml(s) +
     /* 8 — Danger Zone */
     '<div class="card settings-card danger">' + cardHeadHtml(chipHtml('shield', 'var(--red)', 'var(--red-soft)'), 'Danger Zone', 'Irreversible account actions') +
-    '<div class="danger-inset" style="margin-bottom:12px"><div class="di-txt"><div class="st">Download Backup</div>' +
-    '<p class="set-help">Download a full .sqlite snapshot of your conversations, settings, and account data.</p></div>' +
-    '<button class="btn btn-ghost" id="set-backup">' + icon('download', 15) + 'Download backup</button></div>' +
+    '<div class="danger-inset" style="margin-bottom:12px"><div class="di-txt"><div class="st">Export account data</div>' +
+    '<p class="set-help">Download a JSON export of this account’s conversations, settings and data.</p></div>' +
+    '<button class="btn btn-ghost" id="set-backup">' + icon('download', 15) + 'Export account</button></div>' +
     '<div class="danger-inset"><div class="di-txt"><div class="st">Request Data Deletion</div>' +
     '<p class="set-help">Request deletion of all your data including conversations, settings, and account information.</p></div>' +
     '<a class="btn btn-red-solid" href="mailto:aisetdm@gmail.com?subject=Data%20deletion%20request">' + icon('trash', 15) + 'Email deletion request</a></div>' +
@@ -200,6 +201,8 @@ function renderSettings() {
 
     '</div></div>';
 
+  mountAccountDeletion();
+  if(state.me.user.role!=='owner')$('#set-backup').disabled=true;
   /* ---- kill switch: save immediately on toggle (unchanged behavior) ---- */
   $('#kill-switch').querySelector('input').addEventListener('change', async (e) => {
     const wasDirty = state.settingsDirty;
@@ -258,10 +261,12 @@ function renderSettings() {
     });
     const flagEnabledOut = {};
     $('#settings-page').querySelectorAll('[data-flagen]').forEach((el) => { flagEnabledOut[el.dataset.flagen] = !!el.querySelector('input').checked; });
+    if(!$('#set-client-value').checkValidity()){toast('Average client value must be a non-negative number.','err');return;}
     const outbound = $('#set-outbound').value.split('\n').map((x) => x.trim()).filter(Boolean);
     const sbtn = $('#settings-save'); const sprev = sbtn.textContent; sbtn.disabled = true; sbtn.textContent = 'Saving…';
     try {
       const out = await api('/api/settings', { method: 'PUT', body: {
+        ...insightSettingsValues(),
         calendar_link: $('#set-calendar').value,
         notify_emails: $('#set-notify').value,
         ...(($('#set-calendly-token').value || '').trim() ? { calendly_token: $('#set-calendly-token').value.trim() } : {}),
@@ -289,6 +294,7 @@ function renderSettings() {
       state.settings = Object.assign({}, state.settings, { settings: out.settings });
       renderKillDot(); renderAccount();
       setSettingsSaved();
+      state.groqDraft='';state.groqClearDraft=false;$('#set-groq').value='';$('#set-groq-clear').checked=false;
       toast('Settings saved');
     } catch (e) { toast(e.message, 'err'); sbtn.textContent = sprev; }
     finally { sbtn.disabled = false; }
@@ -323,7 +329,7 @@ function renderSettings() {
   if (backupBtn) backupBtn.addEventListener('click', async () => {
     backupBtn.disabled = true;
     try {
-      const res = await sessionFetch('/api/backup');
+      const res = await sessionFetch('/api/account/export');
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || ('HTTP ' + res.status));
@@ -332,12 +338,12 @@ function renderSettings() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'dmsetter-backup.sqlite';
+      a.download = 'dmsetter-account.json';
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      toast('Backup downloaded');
+      toast('Account export downloaded');
     } catch (err) {
       toast(err.message || 'Backup failed', 'err');
     } finally {

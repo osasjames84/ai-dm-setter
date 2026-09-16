@@ -1,3 +1,27 @@
+# Current frontend handoff — day 17 endpoints plus 3f64d5e readiness changes
+
+Screens now cover templates/checks/assembled prompt, onboarding/test drive, Instagram/reconnect, unread/events, prompt versions, lead profiles, analytics, operator overview/ops/audit, team/access/usage, account export and guarded deletion. New settings cover profile extraction, image vision, transcription key and client-value estimates. Original theme and amber AI rings remain; payments are external.
+
+**Resolved:** the day 3–17 endpoints are shipped; 3f64d5e adds pre-migration snapshots and a current-version test-drive gate. The integration copy includes those changes. Frontend consumes their actual payloads. New WORK_SPLIT.md appendix copies the backend contract additions; older notes below are historical snapshots.
+
+**Decision for JD:** unread state currently belongs to the account. Should opening a thread clear it for everybody, or should each teammate have their own unread state? UI currently follows the shipped shared model.
+
+**Still needed from Claude before release:**
+- Partly resolved by 3f64d5e: non-first accounts now require a test-drive version match. Still enforce Instagram readiness; capture the version at job START rather than completion; reject forged completion settings; clear a prior pass after a failed run; ensure goal/link changes invalidate the test. The first account is exempt and missing stored version currently passes the compatibility check.
+- Decide whether pending accounts may run bounded setup simulations (original agreement), or require approval first (current API and UI).
+- Seen endpoint needs a last-displayed-message cursor to avoid acknowledging newer unseen arrivals. Current POST ignores a cursor and sets server time; frontend cannot eliminate that race by itself.
+- Long-lived SSE streams should end on session revocation/account deletion; frontend closes on logout and retains authenticated polling. Rate limits/timeouts/replay are server concerns.
+- Remove the legacy PIN path for release; fix production magic-link delivery failures/token logging; fix test magic-link parser (`token=[A-Za-z0-9_-]+`).
+- Analytics should return the timezone for hourly buckets; UI labels them server time. Version metrics are lifetime figures and labelled separately from the selected window.
+
+**Live validation still needs JD/Claude:** configured Instagram tester and AI/mail providers, queued-send pause/idempotency tests, migration/rollback rehearsal (pre-migration snapshots now exist), and a fresh outside-user onboarding run. No live credentials or providers were used in frontend QA.
+
+Validation: 23 frontend checks passed; 13 real-backend synthetic-account integration checks passed. Browser verified version notes, analytics, admin overview, unread/seen, live connection, settings, and phone-width analytics. Actual AI extraction/vision and real OAuth remain untested. Deletion UI requires typed confirmation plus a final warning; no real account was deleted.
+
+---
+
+## Historical requests and integration notes
+
 # Contract requests from the frontend
 
 One line each: endpoint, shape, why. Claude checks this daily.
@@ -39,3 +63,5 @@ Release-hardening follow-up (backend still c075e28):
 - Pending accounts now see that activation is required for test drives, matching current requireActive behavior. The previously agreed bounded pending simulation flow is still a backend decision.
 - Observed real /api/onboarding steps.live=true with instagram=false and test_drive=false after saving a next-step link on the seeded active account. UI now distinguishes enabled automation from completed setup; correct readiness derivation and all activation paths server-side.
 - The roadmap contains feature work through day 10 and verification through day 14. Subsequent seven-day requests are being used for stabilization, not unapproved feature expansion; a release still requires the outstanding real-provider and operator/user checks.
+
+Concurrent integration note: the shared checkout moved to main during this task. Frontend code was committed as 0ef9de8 there, then preserved on beta/frontend in /tmp/dm-frontend-catchup without reverting main. Main also has the fileURLToPath isolation-test path fix; the JSON-log token parsing request remains separate.

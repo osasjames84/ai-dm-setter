@@ -49,7 +49,7 @@
       <button class="nav-item" id="logout-btn" aria-label="Log out"><span data-icon="logout" data-size="17"></span><span class="nav-label">Log Out</span></button>
     </div>
   </aside>
-  <main id="main">
+  <main id="main"><p id="live-status" class="live-status" role="status"></p>
     <div id="account-access-banner" class="account-access-banner hidden" role="status"></div>
     <section id="view-onboarding" class="hidden"><div class="page" id="onboarding-page"></div></section>
     <section id="view-dashboard" class="hidden"><div class="page" id="dash-page"></div></section>
@@ -57,6 +57,8 @@
     <section id="view-drafts" class="hidden"><div class="page" id="drafts-page"></div></section>
     <section id="view-prompt" class="hidden"><div class="page" id="prompt-page"></div></section>
     <section id="view-content" class="hidden"><div class="page" id="content-page"></div></section>
+    <section id="view-analytics" class="hidden"><div class="page" id="analytics-page"></div></section>
+    <section id="view-versions" class="hidden"><div class="page" id="versions-page"></div></section>
     <section id="view-team" class="hidden"><div class="page" id="team-page"></div></section>
     <section id="view-operator" class="hidden"><div class="page" id="operator-page"></div></section>
     <section id="view-settings" class="hidden"><div class="page" id="settings-page"></div></section>
@@ -79,6 +81,8 @@
 <script src="/js/pages/settings.js"></script>
 <script src="/js/pages/setup.js"></script>
 <script src="/js/pages/beta.js"></script>
+<script src="/js/pages/insights.js"></script>
+<script src="/js/realtime.js"></script>
 <script src="/js/app.js"></script>
 </body>
 </html>

@@ -1226,3 +1226,19 @@ html[data-theme="light"] .check-warn { color:#805000; }
 
 .chips { height:auto; min-height:139px; }
 @media(max-width:680px) { .chips {flex-wrap:nowrap;overflow-x:auto;min-height:68px;} .chips .chip {flex-shrink:0;} }
+
+.live-status {font-size:11px;color:var(--muted);padding:6px 20px;margin:0;flex-shrink:0;}
+#main {display:flex;flex-direction:column;} #main > section{min-height:0;overflow:auto;flex:1;}
+#main > #view-messages{overflow:hidden;height:auto;}
+.metric-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin:24px 0;}
+.metric {padding:20px;} .metric strong{display:block;font-size:28px;margin-top:8px;}
+.data-scroll{overflow-x:auto;margin:16px 0;} .data-table{width:100%;border-collapse:collapse;font-size:13px;}
+.data-table th,.data-table td{padding:12px;text-align:left;border-bottom:1px solid var(--border2);overflow-wrap:anywhere;}
+.version-card{padding:24px;margin:24px 0;} .version-card button{margin:12px 8px 12px 0;}
+#analytics-page h2,.account-overview h4{margin-top:24px;}
+#sidebar{overflow-y:auto;}
+
+.settings-card > label {display:block;margin:14px 0 8px;}
+.settings-card > input {max-width:100%;}
+
+.data-table {min-width:460px;}

@@ -1,6 +1,14 @@
 'use strict';
 /* ============================== state / api ============================== */
 const state = {
+  groqDraft: '',
+  groqClearDraft: false,
+  eventsConnected: false,
+  lastFallbackPoll: 0,
+  pendingSettingsEvent: false,
+  versionSaving: false,
+  versionNoteDirty: false,
+  analyticsDays: 30,
   authenticated: false,
   me: null,
   sessionEpoch: 0,
