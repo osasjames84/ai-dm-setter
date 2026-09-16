@@ -1,0 +1,32 @@
+'use strict';
+/* ============================== state / api ============================== */
+const state = {
+  pin: sessionStorage.getItem('pin') || '',
+  route: 'dashboard',
+  settings: null,
+  stats: null,
+  statsDays: '',
+  convs: [],
+  filterStage: '',
+  filterFlagged: false,
+  filterMode: '',
+  sortAttention: false,
+  search: '',
+  activeId: null,
+  thread: null,        // { conversation, messages, pending_draft }
+  drafts: [],
+  personas: [],
+  composeAs: 'you',
+  preview: { history: [], stage: 'lead', busy: false, notes: {} },
+  promptOpen: { coach: true },
+  script: null,
+  igStatus: null,
+  content: null,
+  contentBusy: false,
+  contentView: 'pains',
+  contentRange: 'month',
+  dashAnimated: false,   // count-up + bar-grow run once per session, not on every 5s poll
+};
+const REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const $ = (s) => document.querySelector(s);
+const esc = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

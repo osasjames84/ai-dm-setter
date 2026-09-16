@@ -20,12 +20,12 @@ YOUR FIRST FIVE DAYS (DETAILS AND THE EXACT API SHAPES ARE IN WORK_SPLIT.MD)
 ----------------------------------------------------------------------------
 
 1. Split index.html into public/js/{api,state,ui,pages/*}.js with plain <script> tags. No bundler, no framework, no npm packages. Zero behaviour change. Fix light mode or remove the toggle.
-2. Login screen for the magic-link flow, replacing the PIN gate. App shell reads /api/me for account name, plan badge, and Instagram status.
+2. Login screen for the magic-link flow, replacing the PIN gate. App shell reads /api/me for account name, access status, and Instagram status.
 3. Remove every control that does nothing (there are thirteen: voice-note button in the composer, three Record/Upload audio buttons, "Coach emails" toggle, "Prospect Info" row, "Refresh AI notes", the fake "Lead Score", the always-on green presence dot, the fake "Seen" line, "Disconnect Instagram" toast, "Team Members" toast, "Request Deletion" toast, single-option unit selects). Then a copy pass: the product is for any DM-based offer, so no "coach", "fitness", "physique", "call" assumptions in labels, placeholders, or hints. Say offer, customer, next step.
 4. Template picker on the Prompt page (GET /api/templates, POST /api/settings/apply-template); the existing "Fill empty sections" button takes a template. A read-only "What the AI sees" panel (GET /api/script/assembled).
 5. Onboarding wizard shell: five steps (Connect Instagram, Pick template, Fill sections, Next step link, Test drive), progress, resumes where you left off from GET /api/onboarding. Wire steps 2 and 3. Show quality checks from GET /api/script/checks inline under each section.
 
-Week 2 is in WORK_SPLIT.md: Instagram connect UI, test-drive transcripts, billing and usage pages, team members, unread state in the inbox, mobile inbox, notifications, undo on send.
+Week 2 is in WORK_SPLIT.md: Instagram connect UI, test-drive transcripts, manual-access status and internal operator usage pages, team members, unread state in the inbox, mobile inbox, notifications, undo on send.
 
 RULES
 -----
@@ -53,3 +53,6 @@ HOW TO REPORT
 -------------
 
 At the end of each day, append to ASTRA_LOG.md: what shipped (with the commit), what's mocked and waiting on the backend, what you need from JD. Keep it to five lines.
+
+PAYMENT AND DELIVERY REVISION
+JD handles payments externally. Follow the revised WORK_SPLIT.md manual-access contract; do not build billing, plans, trials, upgrade buttons or Stripe UI. Account access is pending/active/paused and is distinct from the customer's kill switch. New backend-dependent UI stays behind explicit development fixtures until real endpoints land; never enable mock success by default. CONTRACT_REQUESTS.md and ASTRA_LOG.md are permitted frontend coordination files. Verify existing controls before removing them: the old list of thirteen stubs is historical, and voice recording/upload has since been implemented. Frontend extraction is a separate behaviour-preserving milestone; theme changes follow visual verification.

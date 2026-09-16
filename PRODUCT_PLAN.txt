@@ -1,6 +1,6 @@
 # dmSetter → shippable product
 
-Goal: any business that sells through Instagram DMs (coaches, agencies, course creators, e-com, consultants) can sign up, connect their Instagram, paste their own script, switch autopilot on, and pay monthly.
+Goal: any business that sells through Instagram DMs (coaches, agencies, course creators, e-com, consultants) can sign up, connect their Instagram, paste their own script, test their script, receive JD’s approval, and switch autopilot on. JD handles payments independently outside the app.
 
 Rules for this plan:
 - Every feature is small enough to ship on its own (S = under a day, M = 1 to 3 days, L = about a week).
@@ -57,15 +57,15 @@ Rules for this plan:
 | C.5 | "What the AI sees" panel: the assembled prompt, read-only | S | – |
 | C.6 | Go-live checklist and the kill switch default off until it passes | S | C.2 |
 
-## D. Billing  (start now, Stripe test mode)
+## D. Manual account access and internal usage  (no in-app billing)
 
 | # | Feature | Size | Depends on |
 |---|---------|------|------------|
-| D.1 | Stripe customer per account, checkout, customer portal | M | A.3 |
-| D.2 | Plans: starter / pro (by conversations per month), 7-day trial | S | D.1 |
-| D.3 | AI usage metering: tokens and cost per account per day (the engine already knows model and usage) | S | A.9 |
-| D.4 | Hard stop: AI pauses when the trial ends or the card fails, inbox stays readable | S | D.2 |
-| D.5 | Usage page: messages handled, AI cost, bookings, this month | S | D.3 |
+| D.1 | JD-only account activation/pause, separate from customer AI controls | M | A.3 |
+| D.2 | New accounts pending approval; JD account active; audited operator access changes | S | D.1 |
+| D.3 | Internal AI usage metering: persist tokens and cost per account, including retries and simulations | S | A.9 |
+| D.4 | Hard stop: pending/paused access blocks live sends and scheduled automation; inbox stays readable | S | D.2 |
+| D.5 | Internal operator usage view: messages handled, AI cost, bookings, this month | S | D.3 |
 
 ## E. Product hardening  (start now; from the audit)
 
@@ -121,3 +121,5 @@ Rules for this plan:
 6. **Week 7+:** G.1 to G.5 in parallel with E.6, E.15, F.4 to F.7.
 
 First paying customer is realistic after step 4, as a Meta tester, before review completes.
+
+Payment scope: no Stripe, billing screens, subscription tiers, automatic trials or payment webhooks. JD collects payments independently and grants access manually. See WORK_SPLIT.md for operator authorization and account-access rules.
