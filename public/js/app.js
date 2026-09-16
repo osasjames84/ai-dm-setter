@@ -29,7 +29,7 @@ async function loadSettings() {
 }
 
 window.addEventListener('beforeunload', (e) => {
-  if (state.scriptDirty || state.settingsDirty || state.onboardingDirty) { e.preventDefault(); e.returnValue = ''; }
+  if (state.scriptDirty || state.settingsDirty || state.onboardingDirty || messageDraftsPending()) { e.preventDefault(); e.returnValue = ''; }
 });
 
 /* ============================== poll loop ============================== */

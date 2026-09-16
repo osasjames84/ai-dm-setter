@@ -22,6 +22,7 @@ function renderNav() {
   $('#nav').querySelectorAll('[data-route]').forEach((b) => b.addEventListener('click', () => go(b.dataset.route)));
 }
 function go(route) {
+  if(state.onboardingSaving){toast('Please wait for your setup changes to finish saving.');return;}
   if (route === state.route && (state.scriptDirty || state.settingsDirty || state.onboardingDirty)) return;
   if (route !== state.route) {
     if (state.onboardingDirty && !confirm('Leave without saving your setup script?')) return;

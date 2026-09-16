@@ -19,7 +19,7 @@ function showLogin(message = '') {
   $('#login-email').focus();
 }
 async function logout() {
-  if ((state.scriptDirty || state.settingsDirty || state.onboardingDirty) && !confirm('Log out and leave unsaved changes?')) return;
+  if ((state.scriptDirty || state.settingsDirty || state.onboardingDirty || messageDraftsPending()) && !confirm('Log out and leave unsaved changes?')) return;
   const button = $('#logout-btn'); button.disabled = true;
   try {
     await api('/api/logout', { method: 'POST' });

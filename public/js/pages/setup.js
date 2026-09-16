@@ -11,7 +11,7 @@ const SETUP_FIELDS = [
   ['prompt_hard_rules','Hard rules','What must the AI never say or do?'],
 ];
 function setupError(err) {
-  return [404,501].includes(err.status) ? 'This feature is not available on this server yet. Your existing settings are unchanged.' : err.message;
+  return [404,501].includes(err.status) ? 'This feature is not available on this server yet. Reload to check your saved settings.' : err.message;
 }
 function retryPanel(host, message, retry) {
   host.replaceChildren();
@@ -97,13 +97,17 @@ async function renderOnboarding() {
     if(!progress.steps || typeof progress.steps!=='object') throw new Error('Could not read setup progress.');
     state.onboarding=progress;
     if(state.onboardingStep==null) { const first=SETUP_STEPS.findIndex(([key])=>!progress.steps[key]); state.onboardingStep=first<0?4:first; }
-    status.textContent=SETUP_STEPS.filter(([key])=>progress.steps[key]).length+' of 5 steps complete'+(progress.steps.live ? '. Your account is live.' : '.');
+    status.textContent=setupProgressText(progress);
     drawSetup();
   } catch(err) { if(host.contains(status)) retryPanel(status,setupError(err),renderOnboarding); }
 }
+function setupProgressText(progress) {
+  const count=SETUP_STEPS.filter(([key])=>progress.steps[key]).length;
+  return count+' of 5 steps complete.'+(progress.steps.live ? count===5?' Automation is enabled.':' Automation is enabled; setup checks are incomplete.' : '');
+}
 function updateSetupProgress() {
   const status=$('#setup-status');
-  if(status) status.textContent=SETUP_STEPS.filter(([key])=>state.onboarding.steps[key]).length+' of 5 steps complete'+(state.onboarding.steps.live ? '. Your account is live.' : '.');
+  if(status) status.textContent=setupProgressText(state.onboarding);
   document.querySelectorAll('[data-setup-step]').forEach(button=>{const i=Number(button.dataset.setupStep);const [key,label]=SETUP_STEPS[i];button.textContent=(state.onboarding.steps[key]?'✓ ':String(i+1)+'. ')+label;});
 }
 function drawSetup() {
@@ -111,6 +115,7 @@ function drawSetup() {
   const step=state.onboardingStep;
   host.innerHTML='<nav class="setup-steps" aria-label="Setup steps">'+SETUP_STEPS.map(([key,label],i)=>'<button class="btn '+(i===step?'btn-primary':'btn-ghost')+'" data-setup-step="'+i+'" '+(i===step?'aria-current="step"':'')+'>'+ (state.onboarding.steps[key]?'✓ ':String(i+1)+'. ')+esc(label)+'</button>').join('')+'</nav><div class="card setup-card" id="setup-step-body"></div>';
   host.querySelectorAll('[data-setup-step]').forEach(b=>b.addEventListener('click',()=> {
+    if(state.onboardingSaving){toast('Please wait for your setup changes to finish saving.');return;}
     if(state.onboardingDirty && !confirm('Leave without saving these script edits?')) return;
     state.onboardingDirty=false; state.onboardingStep=Number(b.dataset.setupStep); drawSetup();
   }));
@@ -129,14 +134,14 @@ function drawSetup() {
     $('#setup-script').addEventListener('submit',async e=>{
       e.preventDefault(); const button=$('#setup-save'); const message=$('#setup-save-status'); if(button.disabled)return; button.disabled=true;
       const fields=Array.from(body.querySelectorAll('[data-setup-field]')); const values=Object.fromEntries(fields.map(el=>[el.dataset.setupField,el.value]));
-      fields.forEach(el=>el.disabled=true);
+      fields.forEach(el=>el.disabled=true);state.onboardingSaving=true;
       try {
         const response=await api('/api/settings',{method:'PUT',body:values});
         if(!response.ok)throw new Error('Could not confirm the script was saved.');
         state.settings=await api('/api/settings'); state.onboardingDirty=false; message.textContent='Script saved.';
         await loadScriptChecks(body,$('#setup-check-status')); state.onboarding=await api('/api/onboarding'); updateSetupProgress();
       } catch(err) { message.textContent=setupError(err); }
-      finally { button.disabled=false;fields.forEach(el=>el.disabled=false); }
+      finally { state.onboardingSaving=false;button.disabled=false;fields.forEach(el=>el.disabled=false); }
     });
     loadScriptChecks(body,$('#setup-check-status'));
   } else if(step===3) {

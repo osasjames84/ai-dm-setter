@@ -147,6 +147,8 @@ function renderConvList() {
   if (!state.selected) state.selected = new Set();
   renderListMeta();
   const scroll = list.scrollTop;
+  const unreadTotal=state.convs.reduce((n,c)=>n+Math.max(0,Number(c.unread)||0),0);
+  document.title=(unreadTotal?'('+unreadTotal+' unread in view) ':'')+'dmSetter';
   if (!state.convs.length) {
     list.innerHTML = '<div class="pane-empty"><div class="icon-chip">' + icon('chat', 22) + '</div>' +
       'No conversations here yet.<br>Spawn a test lead to try the funnel.' +
@@ -160,7 +162,7 @@ function renderConvList() {
     const auto = c.mode === 'autopilot';
     const picked = sel && state.selected.has(c.id);
     const priorityCue = state.sortAttention && i < 3 ? '<span class="priority-cue" title="High priority">' + icon('bolt', 12) + '</span>' : '';
-    return '<div class="conv-row' + (!sel && c.id === state.activeId ? ' sel' : '') + (picked ? ' picked' : '') + (unread?' unread':'') + '" data-conv="' + c.id + '">' +
+    return '<div class="conv-row' + (!sel && c.id === state.activeId ? ' sel' : '') + (picked ? ' picked' : '') + (unread?' unread':'') + '" data-conv="' + esc(c.id) + '" tabindex="0" role="button" aria-label="Open conversation with '+esc(c.display_name||c.handle)+'">' +
       (sel ? '<span class="conv-check' + (picked ? ' on' : '') + '">' + (picked ? icon('check', 13) : '') + '</span>' : '') +
       avatarHtml(c.handle, c.display_name, 40, flag) +
       '<div class="conv-mid"><div class="conv-name-row"><span class="conv-name">' + priorityCue + esc(c.display_name || c.handle) + '</span>' +
@@ -188,6 +190,7 @@ function renderConvList() {
     renderConvList();
     loadThread(state.activeId);
   }));
+  list.querySelectorAll('[data-conv]').forEach(row=>row.addEventListener('keydown',e=>{if(e.target===row && ['Enter',' '].includes(e.key)){e.preventDefault();row.click();}}));
   list.querySelectorAll('[data-modetoggle] input').forEach((inp) => inp.addEventListener('change', async (e) => {
     const id = e.target.closest('[data-modetoggle]').dataset.modetoggle;
     try {
@@ -195,8 +198,6 @@ function renderConvList() {
       loadConvs(); if (id === state.activeId) loadThread(id);
     } catch (err) { toast(err.message, 'err'); loadConvs(); }
   }));
-  const unreadTotal=state.convs.reduce((n,c)=>n+(Number(c.unread)||0),0);
-  document.title=(unreadTotal?'('+unreadTotal+') ':'')+'dmSetter';
   list.scrollTop = scroll;
 }
 async function loadThread(id) {
@@ -217,6 +218,9 @@ async function loadThread(id) {
 function renderThread() {
   const pane = $('#pane-thread');
   if (!pane) return;
+  state.composerDrafts ||= {};
+  const oldInput=pane.querySelector('#composer-input');
+  if(oldInput && pane.dataset.conversationId)state.composerDrafts[pane.dataset.conversationId]=oldInput.value;
   const t = state.thread;
   if (!t || !state.activeId) {
     $('#view-messages').classList.remove('thread-open');
@@ -233,7 +237,8 @@ function renderThread() {
   if (structureStale) {
     // Preserve what the owner is typing: the pane is rebuilt when a draft lands
     // or a flag changes, which used to wipe the composer mid-sentence.
-    const keepComposer = (pane.querySelector('#composer-input') || {}).value || '';
+    const keepComposer = state.composerDrafts[c.id] || '';
+    pane.dataset.conversationId=String(c.id);
     const sameDraft = t.pending_draft && pane.dataset.draftId === String(t.pending_draft.id);
     const keepDraft = sameDraft ? [...pane.querySelectorAll('#draft-zone textarea')].map((x) => x.value) : null;
     pane.dataset.key = key;
@@ -255,7 +260,7 @@ function renderThread() {
       '<span id="insert-pop-holder"></span>' +
       '<textarea id="composer-input" rows="1" placeholder="Type a message..."></textarea>' +
       '<button class="icon-btn cal-btn" id="slots-btn" title="Insert call slots">' + icon('calendar', 17) + '</button>' +
-      '<button class="send-btn" id="send-btn">' + icon('send', 16) + '</button>' +
+      '<button class="send-btn" id="send-btn" aria-label="Send message">' + icon('send', 16) + '</button>' +
       '</div></div></div>';
     wireThread();
     renderDraftZone();
@@ -411,7 +416,9 @@ function wireThread() {
     const inp = $('#composer-input');
     const text = inp.value.trim();
     if (!text) return;
+    const epoch=state.sessionEpoch;
     inp.value = '';
+    state.composerDrafts[c.id]='';
     try {
       if (isSim && state.composeAs === 'lead') {
         await api('/api/conversations/' + c.id + '/lead-message', { method: 'POST', body: { text } });
@@ -420,7 +427,8 @@ function wireThread() {
       }
       await loadThread(c.id); loadConvs();
     } catch (e) {
-      if (e.status !== 422) inp.value = text;
+      if(epoch!==state.sessionEpoch)return;
+      if(e.status!==422) restoreFailedMessage(c.id,text);
       toast(e.status === 422 ? 'Blocked by the outbound filter — flagged for review' : e.message, 'err');
       if (e.status === 422) loadThread(c.id);
     }
@@ -546,3 +554,20 @@ renderProspect=function(){
   close.onclick=()=>{state.infoOpen=false;pane.classList.remove('info-open');$('#info-toggle')?.focus();};pane.prepend(close);
 };
 document.addEventListener('keydown',e=>{if(e.key==='Escape' && state.infoOpen){state.infoOpen=false;$('#pane-info')?.classList.remove('info-open');$('#info-toggle')?.focus();}});
+
+function messageDraftsPending() {
+  const drafts={...state.composerDrafts};
+  const pane=$('#pane-thread'),input=pane?.querySelector('#composer-input');
+  if(input && pane.dataset.conversationId)drafts[pane.dataset.conversationId]=input.value;
+  return Object.values(drafts).some(value=>String(value).trim());
+}
+
+function restoreFailedMessage(id,text) {
+  state.composerDrafts ||= {};
+  const pane=$('#pane-thread');
+  const input=pane?.dataset.conversationId===String(id)?pane.querySelector('#composer-input'):null;
+  const newer=input?input.value:state.composerDrafts[id]||'';
+  const restored=text+(newer?'\n'+newer:'');
+  state.composerDrafts[id]=restored;
+  if(input)input.value=restored;
+}

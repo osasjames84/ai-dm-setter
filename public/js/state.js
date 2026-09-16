@@ -8,6 +8,7 @@ const state = {
   onboarding: null,
   onboardingStep: null,
   onboardingDirty: false,
+  onboardingSaving: false,
   settings: null,
   stats: null,
   statsDays: '',
@@ -21,6 +22,7 @@ const state = {
   readReceipts: new Set(),
   search: '',
   activeId: null,
+  composerDrafts: {},
   thread: null,        // { conversation, messages, pending_draft }
   drafts: [],
   personas: [],
