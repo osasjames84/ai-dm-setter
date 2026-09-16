@@ -1305,9 +1305,11 @@ app.get('/api/conversations/:id', requireAdmin, (req, res) => {
  *  autopilot (that failure is the only thing that dropped them to copilot). */
 app.post('/api/conversations/handled-all', requireAdmin, (req, res) => {
   const onlySendFailed = !!req.body?.send_failed_only;
+  // "send failed" threads were (before this fix) dropped to copilot by the
+  // failure; put those back on autopilot whichever way this is called.
   const r = onlySendFailed
     ? db.prepare("UPDATE conversations SET needs_human = 0, needs_human_reason = NULL, mode = 'autopilot' WHERE needs_human = 1 AND needs_human_reason LIKE 'send failed%'").run()
-    : db.prepare('UPDATE conversations SET needs_human = 0, needs_human_reason = NULL WHERE needs_human = 1').run();
+    : db.prepare("UPDATE conversations SET mode = CASE WHEN needs_human_reason LIKE 'send failed%' THEN 'autopilot' ELSE mode END, needs_human = 0, needs_human_reason = NULL WHERE needs_human = 1").run();
   res.json({ ok: true, cleared: r.changes });
 });
 
