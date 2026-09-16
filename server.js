@@ -158,7 +158,10 @@ try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_ext ON conversations(c
 catch (e) { console.warn('[db] could not create unique external_id index (duplicate rows?):', e.message); }
 // Numbered SQL migrations (migrations/NNN_*.sql), applied once each. 001 adds
 // accounts/users/sessions and stamps every existing row as account acc_1.
-runMigrations(db, path.join(__dirname, 'migrations'));
+runMigrations(db, path.join(__dirname, 'migrations'), {
+  // Snapshot the database before any schema change, so a bad migration is a restore, not a loss.
+  before: (pending) => { try { console.log(`[migrations] ${pending.length} pending; pre-migration snapshot: ` + runBackup(db, DATA_DIR)); } catch (e) { console.error('[migrations] pre-migration snapshot failed: ' + e.message); } },
+});
 // Boot runs as the first account: the settings one-shots below and the
 // module-level timers belong to it. The HTTP server is started OUTSIDE this
 // context (see app.listen) so requests never inherit it.
@@ -251,6 +254,7 @@ const SETTING_DEFAULTS = {
   timezone: '',                     // IANA name, e.g. Europe/London
   country: '',                      // ISO-2, e.g. GB
   test_drive_passed_at: '',         // ISO timestamp of the last passed test drive (onboarding step 5)
+  test_drive_passed_version: '',    // prompt version that test drive ran on; a script change invalidates the step
   client_value: '',                 // average value of one sale (analytics revenue estimate), in the account currency
   groq_api_key: '',                 // per-account Groq key for voice-note transcription (secret; server GROQ_API_KEY is the fallback)
   lead_profiles: '1',               // keep a per-lead profile (goal, blocker, budget signal) and feed it to the AI
@@ -1535,14 +1539,23 @@ function onboardingSteps(req) {
     template: !!String(s.template_id || '').trim() || sections,
     sections,
     next_step: link,
-    test_drive: !!String(s.test_drive_passed_at || '').trim(),
+    test_drive: testDrivePassedOnCurrentScript(req.accountId),
     live: req.account.access_status === 'active' && s.kill_switch === '0' && errors.length === 0,
   };
+}
+/** Passed, and on the script as it is now (a later section change needs a rerun). */
+function testDrivePassedOnCurrentScript(accountId) {
+  if (!String(getSetting('test_drive_passed_at') || '').trim()) return false;
+  const v = String(getSetting('test_drive_passed_version') || '');
+  return !v || v === String(currentPromptVersion(accountId) || '');
 }
 app.get('/api/onboarding', requireAccount, (req, res) => res.json({ steps: onboardingSteps(req), access_status: req.account.access_status }));
 app.post('/api/onboarding/go-live', requireAccount, requireActive, (req, res) => {
   const errors = scriptChecks().filter((c) => c.level === 'error');
   if (errors.length) return res.status(400).json({ error: errors[0].message, checks: errors });
+  // A new account must pass a test drive on the script as it is now. The first
+  // account (already live before this existed) is exempt.
+  if (req.accountId !== FIRST_ACCOUNT_ID && !testDrivePassedOnCurrentScript(req.accountId)) return res.status(400).json({ error: 'Run the test drive on the current script before going live', checks: [{ section: 'test_drive', level: 'error', message: 'Test drive not passed on the current script' }] });
   setSetting('kill_switch', '0');
   setSetting('default_mode', 'autopilot');
   audit(req.accountId, req.user.id, 'go-live');
@@ -1562,7 +1575,7 @@ app.post('/api/onboarding/test-drive', requireAccount, requireActive, async (req
   if (!personas.length) return res.status(400).json({ error: 'Unknown persona ids' });
   const settings = { ...engineSettings(), kill_switch: '0' };
   const job = startTestDrive({ personas, settings, accountId: req.accountId, anthropic: a, generateMove, leadMove, runAs, reportUsage,
-    onDone: (j) => { if (j.passed) setSetting('test_drive_passed_at', nowIso()); audit(req.accountId, req.user.id, 'test-drive-result', j.passed ? 'passed' : 'failed'); } });
+    onDone: (j) => { if (j.passed) { setSetting('test_drive_passed_at', nowIso()); setSetting('test_drive_passed_version', String(currentPromptVersion(req.accountId) || '')); } audit(req.accountId, req.user.id, 'test-drive-result', j.passed ? 'passed' : 'failed'); } });
   audit(req.accountId, req.user.id, 'test-drive', personas.map((p) => p.id).join(','));
   if (String(req.query.wait || '') === '1') {
     const deadline = Date.now() + 90_000;
