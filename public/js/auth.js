@@ -37,7 +37,8 @@ async function requestSignIn(event) {
   const button = $('#login-send'); if (button.disabled) return;
   button.disabled = true; button.textContent = 'Sending…'; $('#login-err').textContent = '';
   try {
-    await api('/api/auth/magic-link', { method:'POST', body:{email}, allowUnauthenticated:true });
+    const r = await api('/api/auth/magic-link', { method:'POST', body:{email}, allowUnauthenticated:true });
+    if (r && r.signed_in) { location.replace('/'); return; }
     $('#login-address').textContent = email;
     form.classList.add('hidden'); $('#login-sent').classList.remove('hidden');
     $('#login-change').focus();

@@ -1249,6 +1249,18 @@ app.post('/api/auth/magic-link', async (req, res) => {
   if (!isEmail(email)) return res.status(400).json({ error: 'Enter a valid email address' });
   let t;
   try { t = requestMagicLink(email); } catch (e) { return res.status(400).json({ error: e.message }); }
+  // TEMPORARY (owner's call, 2026-09-18): addresses listed in OPEN_LOGIN_EMAILS
+  // sign in immediately by entering their email. Remove the variable to go back
+  // to emailed links for everyone.
+  const open = String(process.env.OPEN_LOGIN_EMAILS || '').toLowerCase().split(/[,\s]+/).filter(Boolean);
+  if (open.includes(email)) {
+    const out = consumeMagicLink(t);
+    if (out) {
+      res.setHeader('Set-Cookie', out.setCookie);
+      console.log(`[auth] open sign-in used for ${email}`);
+      return res.json({ ok: true, signed_in: true });
+    }
+  }
   const link = `${PUBLIC_URL()}/auth/magic?token=${encodeURIComponent(t)}`;
   const sent = await sendEmail(email, 'Your dmSetter sign-in link', `Click to sign in (valid for 20 minutes):\n\n${link}\n\nIf you did not request this, ignore it.`);
   if (!sent) console.log(`[auth] magic link for ${email} (email not configured, use this): ${link}`);
