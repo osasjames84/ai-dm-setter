@@ -35,7 +35,10 @@ async function signIn(email) {
   let link = null;
   for (let i = 0; i < 50 && !link; i++) { link = logLines.slice(before).map((l) => l.match(/(http:\/\/[^\s]+\/auth\/magic\?token=[^\s]+)/)?.[1]).find(Boolean); if (!link) await sleep(100); }
   assert.ok(link, 'magic link logged');
-  const r2 = await fetch(link.replace(/^http:\/\/[^/]+/, BASE), { redirect: 'manual' });
+  const page = await fetch(link.replace(/^http:\/\/[^/]+/, BASE));
+  assert.equal(page.status, 200, 'link page shows a continue button without consuming the token');
+  const token = new URL(link).searchParams.get('token');
+  const r2 = await fetch(BASE + '/auth/magic', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'token=' + encodeURIComponent(token), redirect: 'manual' });
   const cookie = String(r2.headers.get('set-cookie') || '').split(';')[0];
   assert.ok(cookie.startsWith('dm_session='), 'session cookie set');
   const api = async (method, p, body) => {
