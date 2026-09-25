@@ -257,6 +257,7 @@ const SETTING_DEFAULTS = {
   test_drive_passed_version: '',    // prompt version that test drive ran on; a script change invalidates the step
   client_value: '',                 // average value of one sale (analytics revenue estimate), in the account currency
   groq_api_key: '',                 // per-account Groq key for voice-note transcription (secret; server GROQ_API_KEY is the fallback)
+  end_on_question: '1',             // a live turn must end with a question or next step; the engine retries once when the model ends flat
   lead_profiles: '1',               // keep a per-lead profile (goal, blocker, budget signal) and feed it to the AI
   image_vision: '1',                // describe inbound photos so the AI can react to screenshots
 
