@@ -6,13 +6,17 @@ Screens now cover templates/checks/assembled prompt, onboarding/test drive, Inst
 
 **Decision for JD:** unread state currently belongs to the account. Should opening a thread clear it for everybody, or should each teammate have their own unread state? UI currently follows the shipped shared model.
 
-**Still needed from Claude before release:**
-- Enforce all go-live prerequisites server-side, bind test results to the current script, invalidate stale/failed results, and reject forged completion settings. Version restore must also invalidate the prior test result.
-- Decide whether pending accounts may run bounded setup simulations (original agreement), or require approval first (current API and UI).
-- Seen endpoint needs a last-displayed-message cursor to avoid acknowledging newer unseen arrivals. Current POST ignores a cursor and sets server time; frontend cannot eliminate that race by itself.
-- Long-lived SSE streams should end on session revocation/account deletion; frontend closes on logout and retains authenticated polling. Rate limits/timeouts/replay are server concerns.
-- Remove the legacy PIN path for release; fix production magic-link delivery failures/token logging; fix test magic-link parser (`token=[A-Za-z0-9_-]+`).
-- Analytics should return the timezone for hourly buckets; UI labels them server time. Version metrics are lifetime figures and labelled separately from the selected window.
+**Release gates from Claude: closed on branch `w-backend-gates`** (details in WORK_SPLIT.md appendix "Release gates contract"):
+- Go-live is enforced server-side for every account, the first one included: active access, Instagram connected (OAuth, or the first account's env token; needs_reconnect blocks), no error-level script checks (core sections and next-step link), and a test drive that passed on the CURRENT prompt version. Passes are bound to the version they started on; any new version (section save, template apply, restore) makes them stale. Failed, crashed, partial (fewer than 5 personas) and in-flight runs never count, and a later failed run on the same version withdraws its pass. `test_drive_passed_at` / `test_drive_passed_version` are stripped from PUT /api/settings (reported in `ignored`). Turning the kill switch off through PUT /api/settings runs the same gates (409 with `checks`); turning it on is always allowed.
+- **Decision (live account, script edited):** it stays live. /api/onboarding reports `test_drive_stale: true` and `go_live.blockers`, so the UI should prompt a rerun. We do not silently switch off a live business. If the owner pauses (kill switch on), switching back on needs a fresh pass.
+- **Decision (pending accounts):** approval comes first. Test drives, go-live and every AI route stay 403 for pending and paused accounts; setup screens (templates, sections, next step, Instagram) stay open. No bounded pending simulations.
+- Seen accepts `{ message_id }` or `{ at }` and only acknowledges up to it; thread messages now carry `id`. The frontend sends the last displayed message id.
+- SSE streams end on logout, logout everywhere (new POST /api/logout/all), team removal, account deletion, and a periodic session recheck; max 20 streams per account (429 after). Paused accounts keep their stream (they can still read).
+- Legacy PIN is off unless ALLOW_LEGACY_PIN=1; ADMIN_PIN is only required in production when the PIN is on. Magic links are only printed in development with no mail provider; production returns 503/502 with a plain sentence when mail cannot be sent. Test parser fixed.
+- OPEN_LOGIN_EMAILS: exact normalised match, ignored in production unless OPEN_LOGIN_IN_PRODUCTION=1, audited as `auth:open-login`, rate limited. **JD: set OPEN_LOGIN_IN_PRODUCTION=1 on Railway if you still rely on it.**
+- Analytics returns `timezone` and `timezone_source` (account setting, else server zone) and buckets hours in it.
+- In-memory rate limits on magic-link requests (per IP, per email, per account), sign-in link pages, the OAuth callback, the PIN check and team invites.
+- **JD, first account:** it no longer skips the test-drive gate. It stays live as it is today, but after a pause it needs a passing test drive on the current script before the kill switch can go off again.
 
 **Live validation still needs JD/Claude:** configured Instagram tester and AI/mail providers, queued-send pause/idempotency tests, migration/rollback rehearsal, and a fresh outside-user onboarding run. No live credentials or providers were used in frontend QA.
 
