@@ -208,10 +208,13 @@ async function loadThread(id) {
   renderThread();
   renderProspect();
   const unread=state.convs.find(c=>String(c.id)===String(id))?.unread;
-  const receipt=id+':'+String(data.messages?.at(-1)?.id||'');
+  const last=data.messages?.at(-1);
+  const receipt=id+':'+String(last?.id||last?.created_at||'');
+  // Acknowledge only up to the last message shown, so a newer arrival stays unread.
+  const cursor=last?.id!=null?{message_id:last.id}:last?.created_at?{at:last.created_at}:undefined;
   if(unread>0 && state.route==='messages' && !document.hidden && !state.readReceipts.has(receipt)) {
     state.readReceipts.add(receipt);
-    try {await api('/api/conversations/'+encodeURIComponent(id)+'/seen',{method:'POST'});await loadConvs();}
+    try {await api('/api/conversations/'+encodeURIComponent(id)+'/seen',{method:'POST',body:cursor});await loadConvs();}
     catch(err){state.readReceipts.delete(receipt);if(err.status!==404)toast(err.message,'err');}
   }
 }

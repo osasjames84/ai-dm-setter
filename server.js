@@ -8,7 +8,10 @@ import { PERSONAS, PERSONA_BY_ID } from './lib/personas.js';
 import { igConfigured, igVerifyWebhook, igParseInbound, igSendText, igSendAudio, igSendAction, igProfile, igStatus, igFetchHistory, onIgAuthError, setCredsResolver, igOauthConfigured, igAuthUrl, igCompleteOauth, igRefreshToken, igSubscribeApp } from './lib/instagram.js';
 import { initCrypto, encrypt, decrypt } from './lib/crypto.js';
 import { generateMove, varyMessage, applyOutboundFilter, stripDashes, buildSystemPrompt, anthropicClient, PROMPT_SECTIONS } from './lib/engine.js';
-import { openStream, bump as bumpEvent } from './lib/events.js';
+import { openStream, bump as bumpEvent, initEvents, closeStreams } from './lib/events.js';
+import { TEST_DRIVE_MIN_RUNS, testDriveCounts, testDriveState, goLiveBlockers } from './lib/golive.js';
+import { rateLimit, envInt } from './lib/ratelimit.js';
+import { resolveTimezone, hourFormatter } from './lib/timezone.js';
 import { extractProfile, parseProfile } from './lib/profile.js';
 import { describeImage } from './lib/vision.js';
 import { startTestDrive, getJob as getTestDrive, listJobs as listTestDrives, shapeJob as shapeTestDrive, resolvePersonas } from './lib/testdrive.js';
@@ -32,7 +35,7 @@ import { knowledgeDir } from './lib/knowledge.js';
 installLogging();
 import { runMigrations } from './lib/migrations.js';
 import { runAs, enterAs, outside, currentAccount, currentAccountOrFirst, FIRST_ACCOUNT_ID } from './lib/tenancy.js';
-import { initAuth, requestMagicLink, consumeMagicLink, peekMagicLink, sessionFromRequest, logout as authLogout, pruneAuth, isEmail, normalizeEmail } from './lib/auth.js';
+import { initAuth, requestMagicLink, consumeMagicLink, peekMagicLink, sessionFromRequest, logout as authLogout, logoutAll, sessionHashOf, sessionStillValid, pruneAuth, isEmail, normalizeEmail } from './lib/auth.js';
 import { sendEmail } from './lib/notify.js';
 import { setUsageHook, costUsd } from './lib/usage.js';
 
@@ -503,6 +506,13 @@ function createAccount({ name, ownerEmail }) {
   return id;
 }
 initAuth(db, { isProd: !!process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV === 'production', createAccountFor: (email) => createAccount({ ownerEmail: email }) });
+// Live streams: at most SSE_MAX_PER_ACCOUNT per account; every SSE_REVALIDATE_MS
+// each stream's session is re-checked and revoked ones end.
+initEvents({
+  maxPerAccount: envInt(process.env.SSE_MAX_PER_ACCOUNT, 20),
+  revalidateMs: envInt(process.env.SSE_REVALIDATE_MS, 60_000),
+  validate: (e) => !e.sessionHash || sessionStillValid(e.sessionHash),
+});
 // JD's own login: the first account's owner is the address in OWNER_EMAIL (or the
 // notify list's first address). Created once, so the magic link works day one.
 {
@@ -716,34 +726,40 @@ try {
   }
 } catch (e) { console.error('[migrate] default-off backfill failed:', e.message); }
 
-// Production must never run on the default PIN.
 const IS_PROD = !!process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV === 'production';
-if (IS_PROD && !process.env.ADMIN_PIN) {
-  console.error('[boot] ADMIN_PIN is not set — refusing to start in production with the default PIN');
+// Legacy PIN header (x-admin-pin → first account). Off for release: it only
+// authenticates when ALLOW_LEGACY_PIN=1 is set, and then production must not
+// run on the default PIN. With the PIN off, ADMIN_PIN is not needed at all.
+const LEGACY_PIN = process.env.ALLOW_LEGACY_PIN === '1';
+if (LEGACY_PIN && IS_PROD && !process.env.ADMIN_PIN) {
+  console.error('[boot] ALLOW_LEGACY_PIN=1 but ADMIN_PIN is not set. Refusing to start in production with the default PIN.');
   process.exit(1);
 }
+if (LEGACY_PIN) console.warn('[boot] legacy PIN sign-in is ON (ALLOW_LEGACY_PIN=1). Turn it off before inviting outside users.');
 // PIN brute-force protection: per-IP failure counter; after 5 misses every
 // further miss doubles a lockout (2s, 4s, … capped at 5 min). Timing-safe compare.
+// Only requests that actually send a PIN count, so anonymous /api/me checks never lock anyone out.
 const pinFailures = new Map(); // ip → { n, until }
 const PIN_FREE_FAILURES = 5;
 /**
- * Session cookie → user + account. During the transition the legacy PIN header
- * still works and maps to the first account's owner, so the current frontend
- * keeps functioning until the login screen lands.
+ * Session cookie → user + account. The legacy PIN header is accepted only when
+ * ALLOW_LEGACY_PIN=1 (maps to the first account's owner).
  */
 function requireAdmin(req, res, next) {
   const sess = sessionFromRequest(req);
   if (sess) {
-    req.user = sess.user; req.account = sess.account; req.accountId = sess.account.id;
+    req.user = sess.user; req.account = sess.account; req.accountId = sess.account.id; req.sessionHash = sess.sessionHash;
     return runAs(sess.account.id, () => next());
   }
+  const pin = req.headers['x-admin-pin'];
+  if (!LEGACY_PIN || pin == null || pin === '') return res.status(401).json({ error: 'Sign in to continue' });
   const ip = String(req.ip || req.socket?.remoteAddress || '');
   const rec = pinFailures.get(ip);
   if (rec && rec.until > Date.now()) {
     res.set('Retry-After', String(Math.ceil((rec.until - Date.now()) / 1000)));
-    return res.status(429).json({ error: 'Too many wrong PINs — try again shortly' });
+    return res.status(429).json({ error: 'Too many wrong PINs. Try again shortly.' });
   }
-  const given = Buffer.from(String(req.headers['x-admin-pin'] || ''));
+  const given = Buffer.from(String(pin));
   const want = Buffer.from(ADMIN_PIN);
   const ok = given.length === want.length && crypto.timingSafeEqual(given, want);
   if (!ok) {
@@ -779,6 +795,20 @@ function requireOwner(req, res, next) {
   res.status(403).json({ error: 'Only the account owner can do that' });
 }
 
+// Rate limits on the public auth surface, in memory, per IP and per email/account.
+const AUTH_WINDOW_MS = 15 * 60_000;
+const limitAuthIp = rateLimit({ windowMs: AUTH_WINDOW_MS, max: envInt(process.env.RATE_LIMIT_AUTH_IP, 20), key: (req) => 'ip:' + (req.ip || '') });
+const limitAuthEmail = rateLimit({ windowMs: AUTH_WINDOW_MS, max: envInt(process.env.RATE_LIMIT_AUTH_EMAIL, 5), key: (req) => { const e = normalizeEmail(req.body?.email); return isEmail(e) ? 'email:' + e : null; } });
+const limitAuthAccount = rateLimit({ windowMs: AUTH_WINDOW_MS, max: envInt(process.env.RATE_LIMIT_AUTH_ACCOUNT, 15), key: (req) => {
+  const e = normalizeEmail(req.body?.email);
+  const u = isEmail(e) ? db.prepare('SELECT account_id FROM users WHERE email = ?').get(e) : null;
+  return u ? 'acct:' + u.account_id : null;
+} });
+// Public pages and callbacks that take no session (sign-in link pages, OAuth callback).
+const limitPublicIp = rateLimit({ windowMs: 60_000, max: envInt(process.env.RATE_LIMIT_PUBLIC_IP, 60), key: (req) => 'ip:' + (req.ip || ''), json: false });
+// Account-level actions that send email (team invites).
+const limitInviteAccount = rateLimit({ windowMs: 60 * 60_000, max: envInt(process.env.RATE_LIMIT_INVITE_ACCOUNT, 20), key: (req) => (req.accountId ? 'acct:' + req.accountId : null) });
+
 // Absolute base URL for links Instagram must fetch itself (Audio Arsenal clips).
 // Railway injects RAILWAY_PUBLIC_DOMAIN; PUBLIC_BASE_URL can override locally.
 const PUBLIC_BASE = String(process.env.PUBLIC_BASE_URL
@@ -794,7 +824,7 @@ const getConv = (id) => {
            : db.prepare('SELECT * FROM conversations WHERE id = ?').get(id);
 };
 const historyOf = (convId) =>
-  db.prepare('SELECT role, text, source, att_type, att_id, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at, id').all(convId);
+  db.prepare('SELECT id, role, text, source, att_type, att_id, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at, id').all(convId);
 
 /** Serialize a conversation row for the API (ints → bools where it reads better). */
 function shapeConv(c) {
@@ -1246,30 +1276,62 @@ onIgAuthError((detail) => {
 });
 
 // ---------- auth / settings ----------
-app.post('/api/auth', requireAdmin, (req, res) => res.json({ ok: true }));
+app.post('/api/auth', limitAuthIp, requireAdmin, (req, res) => res.json({ ok: true }));
 
 // ---------- auth ----------
 const PUBLIC_URL = () => PUBLIC_BASE || `http://localhost:${PORT}`;
-app.post('/api/auth/magic-link', async (req, res) => {
+// Sign-in links are only ever emailed. In development with no mail provider
+// configured, the link is printed to the server log so a local run can sign in;
+// production never prints a token or a link.
+const mailConfigured = () => !!process.env.RESEND_API_KEY;
+/** Email a sign-in link. Returns 'sent', 'logged' (dev only, no provider) or 'failed'. */
+async function deliverSignInLink(email, subject, text, link, tag) {
+  if (mailConfigured()) {
+    if (await sendEmail(email, subject, text)) return 'sent';
+    console.error(`[${tag}] sign-in email to ${email} could not be sent`);
+    return 'failed';
+  }
+  if (!IS_PROD) {
+    console.log(`[${tag}] DEV ONLY, no mail provider configured (this is never printed in production). Sign-in link for ${email}: ${link}`);
+    return 'logged';
+  }
+  console.error(`[${tag}] no mail provider configured (RESEND_API_KEY); could not send a sign-in link to ${email}`);
+  return 'failed';
+}
+
+// TEMPORARY (owner's call, 2026-09-18): addresses listed in OPEN_LOGIN_EMAILS
+// sign in immediately by entering their email, without the emailed link.
+// Hardened for release: exact match on the normalised address only (no
+// wildcards or domains), off in production unless OPEN_LOGIN_IN_PRODUCTION=1 is
+// also set, rate limited like every sign-in, and every use is written to the
+// account's audit trail. Remove the variable to go back to emailed links.
+const OPEN_LOGIN_ALLOWED = !IS_PROD || process.env.OPEN_LOGIN_IN_PRODUCTION === '1';
+const openLoginEmails = () => new Set(String(process.env.OPEN_LOGIN_EMAILS || '').split(/[,\s]+/).map(normalizeEmail).filter((e) => isEmail(e)));
+{
+  const n = openLoginEmails().size;
+  if (n && !OPEN_LOGIN_ALLOWED) console.warn(`[auth] OPEN_LOGIN_EMAILS is set (${n}) but ignored in production. Set OPEN_LOGIN_IN_PRODUCTION=1 to allow it.`);
+  else if (n) console.warn(`[auth] open sign-in is ON for ${n} address(es) (OPEN_LOGIN_EMAILS). Anyone who types one of them signs in as that user.`);
+}
+
+app.post('/api/auth/magic-link', limitAuthIp, limitAuthEmail, limitAuthAccount, async (req, res) => {
   const email = normalizeEmail(req.body?.email);
   if (!isEmail(email)) return res.status(400).json({ error: 'Enter a valid email address' });
   let t;
   try { t = requestMagicLink(email); } catch (e) { return res.status(400).json({ error: e.message }); }
-  // TEMPORARY (owner's call, 2026-09-18): addresses listed in OPEN_LOGIN_EMAILS
-  // sign in immediately by entering their email. Remove the variable to go back
-  // to emailed links for everyone.
-  const open = String(process.env.OPEN_LOGIN_EMAILS || '').toLowerCase().split(/[,\s]+/).filter(Boolean);
-  if (open.includes(email)) {
+  if (OPEN_LOGIN_ALLOWED && openLoginEmails().has(email)) {
     const out = consumeMagicLink(t);
     if (out) {
       res.setHeader('Set-Cookie', out.setCookie);
-      console.log(`[auth] open sign-in used for ${email}`);
+      audit(out.user.account_id, out.user.id, 'auth:open-login', `${email} from ${req.ip || 'unknown ip'}`);
+      console.log(`[auth] open sign-in used for ${email} from ${req.ip || 'unknown ip'}`);
       return res.json({ ok: true, signed_in: true });
     }
   }
   const link = `${PUBLIC_URL()}/auth/magic?token=${encodeURIComponent(t)}`;
-  const sent = await sendEmail(email, 'Your dmSetter sign-in link', `Click to sign in (valid for 20 minutes):\n\n${link}\n\nIf you did not request this, ignore it.`);
-  if (!sent) console.log(`[auth] magic link for ${email} (email not configured, use this): ${link}`);
+  const outcome = await deliverSignInLink(email, 'Your dmSetter sign-in link', `Click to sign in (valid for 20 minutes):\n\n${link}\n\nIf you did not request this, ignore it.`, link, 'auth');
+  if (outcome === 'failed') {
+    return res.status(mailConfigured() ? 502 : 503).json({ error: mailConfigured() ? 'We could not send the sign-in email just now. Please try again in a few minutes.' : 'Email sign-in is not set up on this server yet. Please contact support.' });
+  }
   res.json({ ok: true });
 });
 // Opening the link only shows a Continue button; the POST behind it consumes the
@@ -1282,17 +1344,29 @@ const magicPage = (token) => '<!doctype html><html><head><meta charset="utf-8"><
   + '<input type="hidden" name="token" value="' + String(token).replace(/[^A-Za-z0-9_-]/g, '') + '">'
   + '<button type="submit" style="background:#6366f1;color:#fff;border:0;border-radius:10px;padding:12px 22px;font-size:15px;font-weight:600;cursor:pointer">Continue</button></form></body></html>';
 const expiredPage = () => legalPage('Link expired', [['Sign-in link', 'That link has expired or was already used. Go back to the app and request a new one.']]);
-app.get('/auth/magic', (req, res) => {
+app.get('/auth/magic', limitPublicIp, (req, res) => {
   if (!peekMagicLink(req.query.token)) return res.status(400).type('html').send(expiredPage());
   res.type('html').send(magicPage(req.query.token));
 });
-app.post('/auth/magic', express.urlencoded({ extended: false }), (req, res) => {
+app.post('/auth/magic', limitPublicIp, express.urlencoded({ extended: false }), (req, res) => {
   const out = consumeMagicLink(req.body?.token);
   if (!out) return res.status(400).type('html').send(expiredPage());
   res.setHeader('Set-Cookie', out.setCookie);
   res.redirect('/');
 });
-app.post('/api/logout', (req, res) => { res.setHeader('Set-Cookie', authLogout(req)); res.json({ ok: true }); });
+app.post('/api/logout', (req, res) => {
+  const h = sessionHashOf(req);
+  res.setHeader('Set-Cookie', authLogout(req));
+  if (h) closeStreams({ sessionHash: h }, 'logout');   // this tab's live stream ends with the session
+  res.json({ ok: true });
+});
+/** Logout everywhere: every session of this user ends, and so do their live streams. */
+app.post('/api/logout/all', requireAccount, (req, res) => {
+  const n = req.user?.id ? logoutAll(req.user.id) : 0;
+  if (req.user?.id) closeStreams({ userId: req.user.id }, 'logout');
+  res.setHeader('Set-Cookie', authLogout(req));
+  res.json({ ok: true, sessions_closed: n });
+});
 /** The instagram object shared by /api/me and /api/instagram/status. */
 function instagramShape(accountId) {
   const ig = igRowFor(accountId);
@@ -1410,7 +1484,7 @@ app.get('/api/team', requireAccount, (req, res) => {
   res.json(db.prepare('SELECT id, email, role, created_at, last_login_at, (last_login_at IS NOT NULL) AS accepted FROM users WHERE account_id = ? ORDER BY created_at').all(req.accountId)
     .map((u) => ({ ...u, accepted: !!u.accepted })));
 });
-app.post('/api/team/invite', requireAccount, requireOwner, async (req, res) => {
+app.post('/api/team/invite', requireAccount, requireOwner, limitInviteAccount, async (req, res) => {
   const email = normalizeEmail(req.body?.email);
   const role = String(req.body?.role || 'setter') === 'owner' ? 'owner' : 'setter';
   if (!isEmail(email)) return res.status(400).json({ error: 'Enter a valid email address' });
@@ -1419,8 +1493,8 @@ app.post('/api/team/invite', requireAccount, requireOwner, async (req, res) => {
   audit(req.accountId, req.user.id, 'team:invite', `${email} as ${role}`);
   const t = requestMagicLink(email);
   const link = `${PUBLIC_URL()}/auth/magic?token=${encodeURIComponent(t)}`;
-  const sent = await sendEmail(email, `${req.account.name} invited you to dmSetter`, `You've been added to ${req.account.name} on dmSetter as ${role}. Sign in here (valid for 20 minutes):\n\n${link}`);
-  if (!sent) console.log(`[team] invite link for ${email}: ${link}`);
+  const outcome = await deliverSignInLink(email, `${req.account.name} invited you to dmSetter`, `You've been added to ${req.account.name} on dmSetter as ${role}. Sign in here (valid for 20 minutes):\n\n${link}`, link, 'team');
+  if (outcome === 'failed') return res.status(502).json({ error: `${email} was added, but the invite email could not be sent. Ask them to sign in with their email on the login page.`, added: true });
   res.json({ ok: true });
 });
 app.delete('/api/team/:id', requireAccount, requireOwner, (req, res) => {
@@ -1429,6 +1503,7 @@ app.delete('/api/team/:id', requireAccount, requireOwner, (req, res) => {
   if (u.id === req.user.id) return res.status(400).json({ error: 'You cannot remove yourself' });
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
   db.prepare('DELETE FROM users WHERE id = ?').run(u.id);
+  closeStreams({ userId: u.id }, 'removed');
   audit(req.accountId, req.user.id, 'team:remove', u.email);
   res.json({ ok: true });
 });
@@ -1486,6 +1561,7 @@ function deleteAccountData(accountId) {
   });
   try { fs.rmSync(knowledgeDir(accountId), { recursive: true, force: true }); } catch { /* best effort */ }
   _settingsCache.delete(accountId);
+  closeStreams({ accountId }, 'account_deleted');
 }
 // Owner: body { confirm: "<owner email>" } guards against an accidental click.
 app.delete('/api/account', requireAccount, requireOwner, (req, res) => {
@@ -1528,7 +1604,8 @@ app.post('/api/settings/apply-template', requireAccount, (req, res) => {
     setSetting(k, v); filled.push(k);
   }
   setSetting('template_id', t.id);
-  res.json({ ok: true, filled });
+  const v = recordPromptVersion(req.user?.id || null, `template ${t.id}`);
+  res.json({ ok: true, filled, prompt_version: v ? v.version : currentPromptVersion(req.accountId) });
 });
 
 // ---------- script inspection ----------
@@ -1560,43 +1637,88 @@ function scriptChecks() {
 app.get('/api/script/checks', requireAccount, (req, res) => res.json(scriptChecks()));
 
 // ---------- onboarding ----------
+// Go-live gates, all enforced here (the frontend only mirrors them):
+//   active access, Instagram connected (OAuth, or the first account's env token),
+//   no error-level script checks (core sections + next-step link), and a test
+//   drive that PASSED on the CURRENT prompt version. Any new prompt version (a
+//   section save, a template apply, a restore) makes an older pass stale; a later
+//   failed or crashed run on that version clears it; partial runs never count.
+// A business that is already live stays live when its script changes: the
+// onboarding payload marks the test drive stale so the owner is told to rerun
+// it, but the AI is not switched off underneath them. Turning the AI back on
+// after a pause (kill switch off) goes through the same gates as go-live.
+/** 'connected' | 'needs_reconnect' | 'disconnected' for the current account. */
+function instagramState(accountId) {
+  const ig = igRowFor(accountId);
+  if (!ig || ig.status === 'disconnected' || !igConfigured()) return 'disconnected';
+  if (ig.status === 'needs_reconnect' || String(getSetting('ig_auth_error') || '').trim()) return 'needs_reconnect';
+  return 'connected';
+}
+function currentTestDriveState(accountId) {
+  return testDriveState({ passedAt: getSetting('test_drive_passed_at'), passedVersion: getSetting('test_drive_passed_version'), currentVersion: currentPromptVersion(accountId) });
+}
+/** Everything that blocks go-live right now (empty = ready). Reads the current account context. */
+function goLiveBlockersFor(accountId) {
+  const access = db.prepare('SELECT access_status FROM accounts WHERE id = ?').get(accountId)?.access_status || 'pending';
+  return goLiveBlockers({ accessStatus: access, instagram: instagramState(accountId), checks: scriptChecks(), testDrive: currentTestDriveState(accountId) });
+}
 function onboardingSteps(req) {
   const s = allSettings();
-  const ig = igRowFor(req.accountId);
   const errors = scriptChecks().filter((c) => c.level === 'error');
   const sections = ['prompt_persona', 'prompt_offer', 'prompt_qualification', 'prompt_booking', 'prompt_hard_rules'].every((k) => String(s[k] || '').trim());
   const link = s.next_step_type === 'human' || !!String(s.next_step_type === 'call' ? s.calendar_link : s.next_step_link || '').trim();
+  const instagram = instagramState(req.accountId) !== 'disconnected';
   return {
-    instagram: !!ig && ig.status !== 'disconnected' && igConfigured(),
+    instagram,
     template: !!String(s.template_id || '').trim() || sections,
     sections,
     next_step: link,
-    test_drive: testDrivePassedOnCurrentScript(req.accountId),
-    live: req.account.access_status === 'active' && s.kill_switch === '0' && errors.length === 0,
+    test_drive: currentTestDriveState(req.accountId).passed,
+    // Live = the AI is actually able to answer: approved, switched on, a channel, a complete script.
+    live: req.account.access_status === 'active' && s.kill_switch === '0' && instagram && errors.length === 0,
   };
 }
-/** Passed, and on the script as it is now (a later section change needs a rerun). */
-function testDrivePassedOnCurrentScript(accountId) {
-  if (!String(getSetting('test_drive_passed_at') || '').trim()) return false;
-  const v = String(getSetting('test_drive_passed_version') || '');
-  return !v || v === String(currentPromptVersion(accountId) || '');
-}
-app.get('/api/onboarding', requireAccount, (req, res) => res.json({ steps: onboardingSteps(req), access_status: req.account.access_status }));
+app.get('/api/onboarding', requireAccount, (req, res) => {
+  const td = currentTestDriveState(req.accountId);
+  const blockers = goLiveBlockersFor(req.accountId);
+  res.json({
+    steps: onboardingSteps(req),
+    access_status: req.account.access_status,
+    test_drive: { ...td, min_runs: TEST_DRIVE_MIN_RUNS },
+    test_drive_stale: td.stale,
+    go_live: { ready: blockers.length === 0, blockers },
+  });
+});
 app.post('/api/onboarding/go-live', requireAccount, requireActive, (req, res) => {
-  const errors = scriptChecks().filter((c) => c.level === 'error');
-  if (errors.length) return res.status(400).json({ error: errors[0].message, checks: errors });
-  // A new account must pass a test drive on the script as it is now. The first
-  // account (already live before this existed) is exempt.
-  if (req.accountId !== FIRST_ACCOUNT_ID && !testDrivePassedOnCurrentScript(req.accountId)) return res.status(400).json({ error: 'Run the test drive on the current script before going live', checks: [{ section: 'test_drive', level: 'error', message: 'Test drive not passed on the current script' }] });
+  const blockers = goLiveBlockersFor(req.accountId);
+  if (blockers.length) return res.status(400).json({ error: blockers[0].message, checks: blockers });
   setSetting('kill_switch', '0');
   setSetting('default_mode', 'autopilot');
-  audit(req.accountId, req.user.id, 'go-live');
+  audit(req.accountId, req.user.id, 'go-live', `prompt v${currentPromptVersion(req.accountId)}`);
   res.json({ ok: true });
 });
+
+/** Store or clear the go-live test-drive result when a job finishes (runs inside the account context). */
+function recordTestDriveResult(accountId, userId, job) {
+  const v = String(job.prompt_version ?? '');
+  if (testDriveCounts(job) && v) {
+    setSetting('test_drive_passed_at', job.finished_at || nowIso());
+    setSetting('test_drive_passed_version', v);
+  } else if (v && String(getSetting('test_drive_passed_version') || '') === v) {
+    // A later failed, crashed or partial run on the same script withdraws its pass.
+    setSetting('test_drive_passed_at', '');
+    setSetting('test_drive_passed_version', '');
+  }
+  const result = job.status !== 'done' ? 'error' : testDriveCounts(job) ? 'passed' : job.passed ? 'partial' : 'failed';
+  audit(accountId, userId, 'test-drive-result', `${result} on v${v || '?'}`);
+  bumpEvent(accountId, 'settings', null);
+}
+const shapeTestDriveFull = (j) => { const o = shapeTestDrive(j); return o && { ...o, counts_for_go_live: testDriveCounts(j) }; };
 
 // Test drive: the script versus simulated leads, off the inbox. POST starts a
 // job and returns it at once; poll GET /api/onboarding/test-drive/:id. Pass
 // ?wait=1 on the POST to block up to 90s and get the finished job (old contract).
+// Pending accounts are refused (approval comes before any AI spend), paused too.
 app.post('/api/onboarding/test-drive', requireAccount, requireActive, async (req, res) => {
   const a = anthropicClient();
   if (!a) return res.status(503).json({ error: 'AI is not configured on the server' });
@@ -1605,22 +1727,25 @@ app.post('/api/onboarding/test-drive', requireAccount, requireActive, async (req
   if (listTestDrives(req.accountId).some((j) => j.status === 'running')) return res.status(409).json({ error: 'A test drive is already running' });
   const personas = resolvePersonas(req.body?.persona_ids);
   if (!personas.length) return res.status(400).json({ error: 'Unknown persona ids' });
+  recordPromptVersion(req.user?.id || null);   // make sure the script being tested has a version number
+  const promptVersion = currentPromptVersion(req.accountId);
   const settings = { ...engineSettings(), kill_switch: '0' };
-  const job = startTestDrive({ personas, settings, accountId: req.accountId, anthropic: a, generateMove, leadMove, runAs, reportUsage,
-    onDone: (j) => { if (j.passed) { setSetting('test_drive_passed_at', nowIso()); setSetting('test_drive_passed_version', String(currentPromptVersion(req.accountId) || '')); } audit(req.accountId, req.user.id, 'test-drive-result', j.passed ? 'passed' : 'failed'); } });
-  audit(req.accountId, req.user.id, 'test-drive', personas.map((p) => p.id).join(','));
+  const userId = req.user.id;
+  const job = startTestDrive({ personas, settings, accountId: req.accountId, anthropic: a, generateMove, leadMove, runAs, reportUsage, promptVersion,
+    onDone: (j) => recordTestDriveResult(req.accountId, userId, j) });
+  audit(req.accountId, req.user.id, 'test-drive', `${personas.map((p) => p.id).join(',')} on v${promptVersion}`);
   if (String(req.query.wait || '') === '1') {
     const deadline = Date.now() + 90_000;
     while (job.status === 'running' && Date.now() < deadline) await new Promise((r) => setTimeout(r, 1000));
-    return res.json(shapeTestDrive(job));
+    return res.json(shapeTestDriveFull(job));
   }
-  res.status(202).json(shapeTestDrive(job));
+  res.status(202).json(shapeTestDriveFull(job));
 });
-app.get('/api/onboarding/test-drive', requireAccount, (req, res) => res.json(listTestDrives(req.accountId).map(shapeTestDrive).sort((x, y) => (x.started_at < y.started_at ? 1 : -1))));
+app.get('/api/onboarding/test-drive', requireAccount, (req, res) => res.json(listTestDrives(req.accountId).map(shapeTestDriveFull).sort((x, y) => (x.started_at < y.started_at ? 1 : -1))));
 app.get('/api/onboarding/test-drive/:id', requireAccount, (req, res) => {
   const job = getTestDrive(req.params.id);
   if (!job || job.account_id !== req.accountId) return res.status(404).json({ error: 'Not found' });
-  res.json(shapeTestDrive(job));
+  res.json(shapeTestDriveFull(job));
 });
 
 app.get('/api/prompt-starter', requireAdmin, (req, res) => {
@@ -1716,12 +1841,21 @@ app.post('/api/voice', requireAdmin, upload.single('file'), reenterAccount, asyn
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// Server-managed settings: never writable through PUT /api/settings (set by internal flows only).
+// test_drive_* are written only when a real test drive finishes; sending them is ignored.
+const SERVER_MANAGED_SETTINGS = new Set(['ig_auth_error', 'calendly_webhook_id', 'calendly_signing_key', 'content_analysis', 'test_drive_passed_at', 'test_drive_passed_version']);
 app.put('/api/settings', requireAdmin, (req, res) => {
   const body = req.body || {};
+  // Turning the AI on (kill switch 1 → 0) is go-live: same gates as POST /api/onboarding/go-live.
+  if (body.kill_switch != null && !(String(body.kill_switch) === '1' || String(body.kill_switch) === 'true') && getSetting('kill_switch') === '1') {
+    const blockers = goLiveBlockersFor(req.accountId);
+    if (blockers.length) return res.status(409).json({ error: 'The AI cannot be switched on yet: ' + blockers[0].message, checks: blockers });
+    audit(req.accountId, req.user?.id, 'kill-switch-off');
+  }
+  const ignored = [];
   for (const k of Object.keys(SETTING_DEFAULTS)) {
     if (body[k] == null) continue;
-    // System-owned state — never writable via the settings form (set by internal flows).
-    if (k === 'ig_auth_error' || k === 'calendly_webhook_id' || k === 'calendly_signing_key' || k === 'content_analysis') continue;
+    if (SERVER_MANAGED_SETTINGS.has(k)) { if (String(body[k]) !== String(getSetting(k) ?? '')) ignored.push(k); continue; }
     let v = String(body[k]).slice(0, 20000);
     // Guard the two enum-ish settings so downstream never sees garbage.
     if (k === 'default_mode' && !MODES.includes(v)) continue;
@@ -1730,7 +1864,9 @@ app.put('/api/settings', requireAdmin, (req, res) => {
   }
   maybeRefreshCalendly(); // pick up a new token / toggle immediately
   const v = recordPromptVersion(req.user?.id || null);
-  res.json({ ok: true, settings: allSettings(), prompt_version: v ? v.version : currentPromptVersion(req.accountId) });
+  const out = { ok: true, settings: allSettings(), prompt_version: v ? v.version : currentPromptVersion(req.accountId) };
+  if (ignored.length) out.ignored = ignored;
+  res.json(out);
 });
 
 // ---------- prompt versions (E.8) ----------
@@ -1945,15 +2081,33 @@ app.get('/api/conversations', requireAdmin, (req, res) => {
   });
   res.json(shaped);
 });
-/** The owner opened the thread: clear its unread count. */
+/**
+ * The owner opened the thread: acknowledge what they saw. Body (optional):
+ *   { message_id }  the last message displayed (an id from GET /api/conversations/:id)
+ *   { at }          or its created_at timestamp
+ * Only lead messages up to that cursor are acknowledged, so a message that
+ * arrived after the page rendered stays unread. The mark never moves backwards.
+ * Without a cursor everything up to now is acknowledged (old behaviour).
+ */
 app.post('/api/conversations/:id/seen', requireAdmin, (req, res) => {
   const conv = getConv(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Not found' });
-  db.prepare('UPDATE conversations SET last_seen_at = ? WHERE id = ?').run(nowIso(), conv.id);
-  res.json({ ok: true });
+  const b = req.body || {};
+  let mark = nowIso();
+  if (b.message_id != null && b.message_id !== '') {
+    const m = db.prepare('SELECT created_at FROM messages WHERE id = ? AND conversation_id = ?').get(Number(b.message_id), conv.id);
+    if (!m) return res.status(400).json({ error: 'That message is not in this conversation' });
+    mark = toIso(m.created_at);
+  } else if (b.at != null && b.at !== '') {
+    const t = Date.parse(String(b.at));
+    if (!Number.isFinite(t)) return res.status(400).json({ error: 'at must be a timestamp' });
+    mark = new Date(Math.min(t, Date.now())).toISOString();
+  }
+  if (!conv.last_seen_at || mark > conv.last_seen_at) db.prepare('UPDATE conversations SET last_seen_at = ? WHERE id = ?').run(mark, conv.id);
+  res.json({ ok: true, last_seen_at: (!conv.last_seen_at || mark > conv.last_seen_at) ? mark : conv.last_seen_at });
 });
 /** Live updates: one event per change ({type: message|draft|conversation|settings, id}); the page refetches. */
-app.get('/api/events', requireAccount, (req, res) => openStream(req.accountId, req, res));
+app.get('/api/events', requireAccount, (req, res) => { openStream(req.accountId, req, res, { userId: req.user?.id || null, sessionHash: req.sessionHash || null }); });
 
 app.get('/api/conversations/:id', requireAdmin, (req, res) => {
   const conv = getConv(req.params.id);
@@ -2246,8 +2400,11 @@ app.get('/api/analytics', requireAdmin, (req, res) => {
   for (const k of Object.keys(split)) split[k].rate = split[k].conversations ? Math.round((split[k].booked / split[k].conversations) * 1000) / 10 : null;
   const outcomes = {};
   for (const st of ['call_booked', 'sale', 'routed', 'dead']) outcomes[st] = db.prepare('SELECT COUNT(DISTINCT conversation_id) c FROM stage_events WHERE account_id = ? AND stage = ? AND at >= ?').get(A, st, since).c;
+  // Hourly buckets in the account's timezone setting (server zone when unset or unknown); the response names it.
+  const tz = resolveTimezone(getSetting('timezone'));
+  const hourOf = hourFormatter(tz.timezone);
   const byHour = new Array(24).fill(0);
-  for (const r of db.prepare("SELECT created_at FROM messages WHERE account_id = ? AND role = 'lead' AND created_at >= ? LIMIT 50000").all(A, since)) { const h = new Date(r.created_at).getHours(); if (h >= 0 && h < 24) byHour[h]++; }
+  for (const r of db.prepare("SELECT created_at FROM messages WHERE account_id = ? AND role = 'lead' AND created_at >= ? LIMIT 50000").all(A, since)) { const h = hourOf(r.created_at); if (h >= 0 && h < 24) byHour[h]++; }
   const gaps = db.prepare("SELECT c.created_at AS a, e.at AS b FROM stage_events e JOIN conversations c ON c.id = e.conversation_id WHERE e.account_id = ? AND e.stage = 'call_booked' AND e.at >= ?").all(A, since)
     .map((r) => (Date.parse(r.b) - Date.parse(r.a)) / 3600_000).filter((x) => Number.isFinite(x) && x >= 0).sort((x, y) => x - y);
   const medianHours = gaps.length ? Math.round(gaps[Math.floor(gaps.length / 2)] * 10) / 10 : null;
@@ -2257,7 +2414,7 @@ app.get('/api/analytics', requireAdmin, (req, res) => {
   res.json({
     window_days: days,
     leads: { total: convs.length, keyword: convs.filter((c) => c.kw_triggered).length, instagram: convs.filter((c) => c.channel === 'instagram').length, simulator: convs.filter((c) => c.channel === 'sim').length },
-    outcomes, conversion: split, by_version: versions, lead_messages_by_hour: byHour, median_hours_to_booking: medianHours,
+    outcomes, conversion: split, by_version: versions, lead_messages_by_hour: byHour, timezone: tz.timezone, timezone_source: tz.source, median_hours_to_booking: medianHours,
     revenue: { sales, client_value: clientValue, currency: getSetting('currency') || 'GBP', estimated: Math.round(sales * clientValue * 100) / 100 },
   });
 });
@@ -2419,7 +2576,7 @@ app.get('/auth/instagram/start', requireAccount, (req, res) => {
     .run(state, req.accountId, req.user.id, nowIso(), new Date(Date.now() + 15 * 60_000).toISOString());
   res.redirect(igAuthUrl(IG_REDIRECT(), state));
 });
-app.get('/auth/instagram/callback', async (req, res) => {
+app.get('/auth/instagram/callback', limitPublicIp, async (req, res) => {
   const fail = (msg) => res.redirect('/?connect_error=' + encodeURIComponent(String(msg).slice(0, 120)));
   const { code, state, error, error_description } = req.query;
   if (error) return fail(error_description || error);
