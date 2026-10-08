@@ -58,7 +58,7 @@ function contentPainChart(pains, range) {
 
   let rowsHtml;
   if (!top.length || maxCount === 0) {
-    rowsHtml = '<div class="insight-empty">no pain points in this window — try a wider range</div>';
+    rowsHtml = '<div class="insight-empty">no pain points in this window, try a wider range</div>';
   } else {
     rowsHtml = '<div class="bar-rows">' + top.map((p) => {
       const pct = p.count > 0 ? Math.max(4, Math.round((p.count / maxCount) * 100)) : 0;
@@ -119,7 +119,7 @@ async function renderContent() {
     page.innerHTML = '<div class="content-empty-wrap"><div class="card content-empty-card">' +
       '<div class="content-empty-icon">' + icon('bulb', 30) + '</div>' +
       '<h1>Turn your DMs into content</h1>' +
-      '<p>Mine every pain point, question and dream outcome your leads have ever sent you — and turn them into hooks, reels and posts.</p>' +
+      '<p>Mine every pain point, question and dream outcome your leads have ever sent you, and turn them into hooks, reels and posts.</p>' +
       '<button class="btn btn-primary" id="content-analyze">' + icon('spark', 16) + 'Analyze my DMs</button>' +
       '</div></div>';
     $('#content-analyze').addEventListener('click', (e) => contentRunAnalyze('/api/content/analyze', e.currentTarget, 'Mining your DMs… this takes ~30s'));

@@ -54,17 +54,17 @@ function funnelSvg(vals, labels) {
   const pills = xs.map((cx, i) => {
     const label = i === 0 ? '100%' : (convs[i] * 100).toFixed(1) + '%';
     const w = i === 0 ? 58 : 62;
-    const tip = i === 0 ? '100% — start' : labels[i - 1] + ' → ' + labels[i] + ': ' + label;
+    const tip = i === 0 ? '100%: start' : labels[i - 1] + ' → ' + labels[i] + ': ' + label;
     return '<g><title>' + esc(tip) + '</title>' +
-      '<rect x="' + f(cx - w / 2) + '" y="' + f(CY - 14) + '" width="' + w + '" height="28" rx="14" fill="var(--card)" stroke="var(--ring)" stroke-width="2"/>' +
-      '<text x="' + f(cx) + '" y="' + f(CY + 5) + '" text-anchor="middle" fill="var(--text)" font-size="13" font-weight="600" font-family="system-ui, -apple-system, sans-serif">' + label + '</text></g>';
+      '<rect x="' + f(cx - w / 2) + '" y="' + f(CY - 14) + '" width="' + w + '" height="28" rx="14" fill="var(--card)" stroke="var(--c-border-strong)" stroke-width="1.5"/>' +
+      '<text x="' + f(cx) + '" y="' + f(CY + 5) + '" text-anchor="middle" fill="var(--text)" font-size="13" font-weight="600" font-family="inherit">' + label + '</text></g>';
   }).join('');
   return '<svg viewBox="0 0 1000 118" class="funnel-svg" preserveAspectRatio="xMidYMid meet">' +
     '<defs>' +
     '<linearGradient id="funnelGradient" x1="0%" y1="0%" x2="100%" y2="0%">' +
-    '<stop offset="0%" stop-color="hsl(38, 92%, 65%)"/><stop offset="100%" stop-color="hsl(28, 90%, 55%)"/></linearGradient>' +
+    '<stop offset="0%" stop-color="var(--funnel-from)"/><stop offset="100%" stop-color="var(--funnel-to)"/></linearGradient>' +
     '<linearGradient id="highlightGradient" x1="0%" y1="0%" x2="0%" y2="100%">' +
-    '<stop offset="0%" stop-color="rgba(255, 255, 255, 0.4)"/><stop offset="100%" stop-color="rgba(255, 255, 255, 0)"/></linearGradient>' +
+    '<stop offset="0%" stop-color="rgba(255, 255, 255, 0.28)"/><stop offset="100%" stop-color="rgba(255, 255, 255, 0)"/></linearGradient>' +
     '<filter id="funnelShadow" x="-5%" y="-15%" width="110%" height="140%">' +
     '<feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="rgba(0,0,0,0.15)"/></filter>' +
     '</defs>' +
@@ -127,7 +127,7 @@ function renderDashboard() {
   const coach = ((state.settings && state.settings.settings && state.settings.settings.coach_name) || '').trim();
   const cards = [
     { label: 'Ongoing Chats', num: st.active, sub: 'Active conversations', ic: 'chat' },
-    { label: 'Autopilot Enabled', num: st.autopilot_count, sub: '—', ic: 'bot', nav: 'ai_on' },
+    { label: 'Autopilot Enabled', num: st.autopilot_count, sub: 'AI handling replies', ic: 'bot', nav: 'ai_on' },
     { label: 'Needs Review', num: st.needs_review, sub: 'Flagged conversations', ic: 'bot', nav: 'flagged' },
     { label: 'In Followup Sequence', num: st.in_followup, sub: 'Queued followups', ic: 'chats' },
   ];

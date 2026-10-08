@@ -32,7 +32,7 @@ import { captureException, errorMiddleware, errorsReady } from './lib/errors.js'
 import { installLogging } from './lib/logs.js';
 import { offsiteReady, uploadBackup } from './lib/offsite.js';
 import { knowledgeDir } from './lib/knowledge.js';
-import { legalPage, privacyPage, termsPage, dataDeletionPage } from './lib/legal.js';
+import { legalPage, privacyPage, termsPage, dataDeletionPage, PAGE_HEAD, PAGE_BRAND } from './lib/legal.js';
 installLogging();
 import { runMigrations } from './lib/migrations.js';
 import { runAs, enterAs, outside, currentAccount, currentAccountOrFirst, FIRST_ACCOUNT_ID } from './lib/tenancy.js';
@@ -1520,12 +1520,11 @@ app.post('/api/auth/magic-link', limitAuthIp, limitAuthEmail, limitAuthAccount, 
 // Opening the link only shows a Continue button; the POST behind it consumes the
 // one-time token. Chat apps and mail clients prefetch links for previews, which
 // used to spend the token before the person ever tapped it.
-const magicPage = (token) => '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Sign in to dmSetter</title></head>'
-  + '<body style="font-family:Inter,system-ui,sans-serif;background:#171a21;color:#f9fafa;display:grid;place-items:center;min-height:100vh;margin:0;text-align:center;padding:24px">'
-  + '<form method="post" action="/auth/magic" style="max-width:380px"><h2 style="font-weight:600;margin:0 0 8px">Sign in to dmSetter</h2>'
-  + '<p style="color:#a7abb4;line-height:1.6;margin:0 0 20px">Tap continue to finish signing in on this device.</p>'
+const magicPage = (token) => '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Sign in to dmSetter</title>' + PAGE_HEAD + '</head>'
+  + '<body class="center"><form method="post" action="/auth/magic" class="panel">' + PAGE_BRAND + '<h1>Sign in to dmSetter</h1>'
+  + '<p>Tap continue to finish signing in on this device.</p>'
   + '<input type="hidden" name="token" value="' + String(token).replace(/[^A-Za-z0-9_-]/g, '') + '">'
-  + '<button type="submit" style="background:#6366f1;color:#fff;border:0;border-radius:10px;padding:12px 22px;font-size:15px;font-weight:600;cursor:pointer">Continue</button></form></body></html>';
+  + '<button type="submit">Continue</button></form></body></html>';
 const expiredPage = () => legalPage('Link expired', [['Sign-in link', 'That link has expired or was already used. Go back to the app and request a new one.']], { plain: true });
 app.get('/auth/magic', limitPublicIp, (req, res) => {
   if (!peekMagicLink(req.query.token)) return res.status(400).type('html').send(expiredPage());
