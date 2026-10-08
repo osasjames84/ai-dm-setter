@@ -1254,6 +1254,11 @@ function storeDraft(convId, messages, stageSuggestion, needsHuman, reason) {
   return tx(() => storeDraftInner(convId, messages, stageSuggestion, needsHuman, reason));
 }
 function storeDraftInner(convId, messages, stageSuggestion, needsHuman, reason) {
+  // No AI key: an empty draft helps nobody. Flag the thread with a sentence instead.
+  if (reason === 'ai_not_configured' && !(Array.isArray(messages) && messages.some((m) => String(m || '').trim()))) {
+    setNeedsHuman(convId, 'AI is not set up on this server yet');
+    return null;
+  }
   const msgs = Array.isArray(messages) && messages.length ? messages.slice(0, 2).map((m) => String(m)) : [''];
   discardPending(convId); // at-most-one pending draft
   const info = db.prepare(`INSERT INTO drafts
@@ -1832,7 +1837,7 @@ function scriptChecks() {
     ['prompt_hard_rules', 'Hard Rules are empty. Add at least the things it must never do.']];
   for (const [k, m] of req) if (!txt(k)) out.push({ section: k, level: 'error', message: m });
   const link = s.next_step_type === 'call' ? txt('calendar_link') : txt('next_step_link');
-  if (s.next_step_type !== 'human' && !link) out.push({ section: 'next_step', level: 'error', message: s.next_step_type === 'call' ? 'No booking link set. Add your calendar link in Settings.' : 'No link for the next step. Add the checkout or form link.' });
+  if (s.next_step_type !== 'human' && !link) out.push({ section: 'next_step', level: 'error', message: s.next_step_type === 'call' ? 'No booking link set. Add your calendar link in Setup, step 4 (Next step).' : 'No link for the next step. Add the checkout or form link.' });
   if (txt('prompt_booking') && !/confirm/i.test(txt('prompt_booking'))) out.push({ section: 'prompt_booking', level: 'warn', message: 'Booking Sequence never says how the lead confirms (screenshot, reply, order number).' });
   if (txt('prompt_qualification') && !/\?/.test(txt('prompt_qualification'))) out.push({ section: 'prompt_qualification', level: 'warn', message: 'Qualification Sequence has no actual questions in it.' });
   if (txt('prompt_hard_rules') && !/price|cost|fee|£|\$/i.test(txt('prompt_hard_rules'))) out.push({ section: 'prompt_hard_rules', level: 'warn', message: 'Hard Rules say nothing about prices. Decide whether the AI may quote them.' });
@@ -2056,6 +2061,25 @@ app.post('/api/voice', requireAdmin, upload.single('file'), reenterAccount, asyn
 // Server-managed settings: never writable through PUT /api/settings (set by internal flows only).
 // test_drive_* are written only when a real test drive finishes; sending them is ignored.
 const SERVER_MANAGED_SETTINGS = new Set(['ig_auth_error', 'calendly_webhook_id', 'calendly_signing_key', 'content_analysis', 'test_drive_passed_at', 'test_drive_passed_version']);
+// Kill switch for the whole team. Anyone on the account can PAUSE the AI (a
+// setter watching it misbehave must be able to stop it). Turning it back on is
+// go-live, so it stays owner-only and passes the same gates.
+app.post('/api/kill-switch', requireAdmin, (req, res) => {
+  const on = req.body?.on === true || req.body?.on === '1' || req.body?.on === 'true';
+  if (on) {
+    setSetting('kill_switch', '1');
+    audit(req.accountId, req.user?.id, 'kill-switch-on');
+    return res.json({ ok: true, kill_switch: '1' });
+  }
+  if (req.user?.role !== 'owner') return res.status(403).json({ error: 'Only the account owner can switch the AI back on' });
+  if (getSetting('kill_switch') === '1') {
+    const blockers = goLiveBlockersFor(req.accountId);
+    if (blockers.length) return res.status(409).json({ error: 'The AI cannot be switched on yet: ' + blockers[0].message, checks: blockers });
+    setSetting('kill_switch', '0');
+    audit(req.accountId, req.user?.id, 'kill-switch-off');
+  }
+  res.json({ ok: true, kill_switch: getSetting('kill_switch') });
+});
 app.put('/api/settings', requireAdmin, requireOwner, (req, res) => {
   const body = req.body || {};
   // Turning the AI on (kill switch 1 → 0) is go-live: same gates as POST /api/onboarding/go-live.
@@ -2069,6 +2093,18 @@ app.put('/api/settings', requireAdmin, requireOwner, (req, res) => {
     if (body[k] == null) continue;
     if (SERVER_MANAGED_SETTINGS.has(k)) { if (String(body[k]) !== String(getSetting(k) ?? '')) ignored.push(k); continue; }
     let v = String(body[k]).slice(0, 20000);
+    // Autopilot response time: the server never replies faster than 15s, so
+    // store what will actually happen, and keep max at or above min.
+    if (k === 'response_min' || k === 'response_max') {
+      const n = Number(v);
+      if (Number.isFinite(n)) {
+        v = String(Math.max(15, Math.round(n)));
+        if (k === 'response_max') {
+          const min = Math.max(15, Number(body.response_min ?? getSetting('response_min')) || 15);
+          v = String(Math.max(min, Number(v)));
+        }
+      }
+    }
     // Guard the two enum-ish settings so downstream never sees garbage.
     if (k === 'default_mode' && !MODES.includes(v)) continue;
     if (k === 'kill_switch') v = v === '1' || v === 'true' ? '1' : '0';
@@ -2466,6 +2502,7 @@ app.post('/api/conversations/:id/request-draft', requireAdmin, requireActive, as
     const move = await generateMove(engineSettings(), conv, historyOf(conv.id));
     const messages = Array.isArray(move?.messages) && move.messages.length
       ? move.messages.slice(0, 2).map((m) => cleanOutbound(String(m))) : [''];
+    if (move?.reason === 'ai_not_configured') return res.status(503).json({ error: 'AI is not set up on this server yet. Add the Anthropic API key, then try again.' });
     const draft = storeDraft(conv.id, messages, move?.stage, move?.needs_human, move?.reason);
     res.json({ ...draft, messages: parseJ(draft.messages_json, []), needs_human: !!draft.needs_human });
   } catch (e) { res.status(500).json({ error: e.message }); }

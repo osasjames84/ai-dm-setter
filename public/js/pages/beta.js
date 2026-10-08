@@ -67,7 +67,7 @@ function renderGoLiveBlockers(root) {
   const stale=!!state.onboarding?.test_drive_stale;
   box.hidden=!items.length && !stale;
   const list=items.map(b=>'<li>'+esc(b.message||b.code||'')+'</li>');
-  if(stale && !items.some(b=>/test/i.test(b.code||'')))list.push('<li>Your script changed since the last test drive. Run it again before switching the AI back on.</li>');
+  if(stale && !items.some(b=>/test/i.test((b.code||'')+(b.section||''))))list.push('<li>Your script changed since the last test drive. Run it again before switching the AI back on.</li>');
   box.querySelector('ul').innerHTML=list.join('');
 }
 function renderTestDrive(body) {

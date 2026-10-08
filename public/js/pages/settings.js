@@ -143,8 +143,8 @@ function renderSettings() {
     '<div class="set-sub ring"><div class="set-sub-head">' + chipHtml('stopwatch', 'var(--accent-text)', 'var(--indigo-soft)') +
     '<span class="st">Response Time <span class="tag indigo set-badge">Important</span></span></div>' +
     '<p class="set-help">Total time from the lead’s message to the reply landing (feels more human). The AI’s thinking time counts toward it. If thinking runs past the window, the reply sends as soon as it’s ready.</p>' +
-    '<div class="rt-controls"><input id="set-resp-min" aria-label="Minimum response time" type="number" min="0" value="' + esc(s.response_min) + '"><span class="rt-to">to</span>' +
-    '<input id="set-resp-max" aria-label="Maximum response time" type="number" min="0" value="' + esc(s.response_max) + '">' +
+    '<div class="rt-controls"><input id="set-resp-min" aria-label="Minimum response time" type="number" min="15" value="' + esc(s.response_min) + '"><span class="rt-to">to</span>' +
+    '<input id="set-resp-max" aria-label="Maximum response time" type="number" min="15" value="' + esc(s.response_max) + '">' +
     '<select id="set-resp-unit"><option value="seconds" selected>seconds</option></select></div></div>' +
     '<div class="set-sub"><div class="set-inline"><div class="set-inline-txt"><div class="st">Instagram typing indicator</div>' +
     '<p class="set-help">Mark as read before each reply when possible, show typing, then send. For queued messages this lines up with the countdown (presence starts early enough to finish at 0; up to 30s lead-in). Delay scales with message length (autopilot only; dashboard manual sends go out immediately).</p></div>' +
@@ -202,17 +202,26 @@ function renderSettings() {
     '</div></div>';
 
   mountAccountDeletion();
-  if(state.me.user.role!=='owner')$('#set-backup').disabled=true;
+  if(state.me.user.role!=='owner'){
+    $('#set-backup').disabled=true;
+    // Setters can pause the AI (kill switch) but cannot change settings.
+    const page=$('#settings-page');
+    page.querySelectorAll('input,select,textarea,button').forEach((el)=>{ if(!el.closest('#kill-switch') && !el.closest('#settings-tabs')) el.disabled=true; });
+    const save=$('#settings-save'); if(save){ save.textContent='View only'; save.disabled=true; }
+    const head=page.querySelector('.workspace-head');
+    if(head && !page.querySelector('.setter-note')) head.insertAdjacentHTML('afterend','<p class="set-help setter-note">Only the account owner can change settings. You can still pause the AI with the kill switch.</p>');
+  }
   /* ---- kill switch: save immediately on toggle (unchanged behavior) ---- */
   $('#kill-switch').querySelector('input').addEventListener('change', async (e) => {
     const wasDirty = state.settingsDirty;
     syncSettingsFromDom(); // capture any in-progress edits before they get overwritten below
     try {
-      const out = await api('/api/settings', { method: 'PUT', body: { kill_switch: e.target.checked ? '1' : '0' } });
-      state.settings = Object.assign({}, state.settings, { settings: Object.assign({}, out.settings, state.settings.settings, { kill_switch: out.settings.kill_switch }) });
+      // Any team member can pause the AI; switching it back on is owner-only and gated.
+      const out = await api('/api/kill-switch', { method: 'POST', body: { on: e.target.checked } });
+      state.settings = Object.assign({}, state.settings, { settings: Object.assign({}, state.settings.settings, { kill_switch: out.kill_switch }) });
       renderKillDot(); renderSettings();
       if (wasDirty) markSettingsDirty(); else setSettingsSaved();
-      toast(out.settings.kill_switch === '1' ? 'Kill switch ON: AI paused everywhere' : 'Kill switch off: AI live');
+      toast(out.kill_switch === '1' ? 'Kill switch ON: AI paused everywhere' : 'Kill switch off: AI live');
     } catch (err) {
       // Refused (for example: account not approved yet). Put the switch and the
       // stored value back to what the server still has, so the label matches

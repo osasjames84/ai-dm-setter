@@ -342,6 +342,27 @@ try {
     db.prepare("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE email = 'sweep@example.test')").run(); db.close();
     assert.equal(await within(ev.ended, 3000), true);
   });
+  await test('setters can pause the AI but cannot change settings, go live or switch the AI back on', async () => {
+    const own = await signIn(srv, 'teamowner@example.test');
+    assert.equal((await own.api('POST', '/api/team/invite', { email: 'teamsetter@example.test', role: 'setter' })).status, 200);
+    const st = await signIn(srv, 'teamsetter@example.test');
+    const pause = await st.api('POST', '/api/kill-switch', { on: true }); assert.equal(pause.status, 200); assert.equal(pause.json.kill_switch, '1');
+    assert.equal((await st.api('POST', '/api/kill-switch', { on: false })).status, 403);
+    assert.equal((await st.api('PUT', '/api/settings', { coach_name: 'x' })).status, 403);
+    assert.equal((await st.api('POST', '/api/onboarding/go-live')).status, 403);
+    assert.equal((await st.api('POST', '/api/settings/apply-template', { id: 'agency', only_empty: false })).status, 403);
+    assert.equal((await st.api('GET', '/api/backup')).status, 403);
+    const off = await own.api('POST', '/api/kill-switch', { on: false }); assert.notEqual(off.status, 200, 'pending owner cannot go live through the kill switch');
+  });
+  await test('autopilot response time is clamped to the 15s floor and max stays at or above min', async () => {
+    const own = await signIn(srv, 'teamowner@example.test');
+    assert.equal((await own.api('PUT', '/api/settings', { response_min: '0', response_max: '5' })).status, 200);
+    const s = (await own.api('GET', '/api/settings')).json.settings;
+    assert.equal(s.response_min, '15'); assert.equal(s.response_max, '15');
+    assert.equal((await own.api('PUT', '/api/settings', { response_min: '50', response_max: '20' })).status, 200);
+    const s2 = (await own.api('GET', '/api/settings')).json.settings;
+    assert.equal(s2.response_min, '50'); assert.equal(s2.response_max, '50');
+  });
   await test('removing a team member ends their stream', async () => {
     assert.equal((await jd.api('POST', '/api/team/invite', { email: 'member@example.test', role: 'setter' })).status, 200);
     const m = await signIn(srv, 'member@example.test');
@@ -400,6 +421,10 @@ try {
     assert.equal(r.status, 503); assert.ok((await r.json()).error);
     await sleep(200);
     assert.ok(!prod.logLines.some((l) => /token=/.test(l)), 'no token in production logs');
+  });
+  await test('production: unsigned Instagram webhooks are rejected when no app secret is set', async () => {
+    const r = await fetch(prod.base + '/webhook/instagram', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ object: 'instagram', entry: [] }) });
+    assert.equal(r.status, 403);
   });
   await test('production: open sign-in is ignored unless explicitly allowed', async () => {
     const r = await fetch(prod.base + '/api/auth/magic-link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'open@example.test' }) });

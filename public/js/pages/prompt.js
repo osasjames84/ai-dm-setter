@@ -737,22 +737,26 @@ function markScriptDirty() {
   if (state.scriptDirty) return;
   state.scriptDirty = true;
   const b = document.getElementById('script-save');
+  if (b && state.me?.user?.role !== 'owner') return; // setters: view only
   if (b) { b.textContent = 'Save Changes'; b.classList.remove('is-saved'); }
 }
 function setScriptSaved() {
   state.scriptDirty = false;
   const b = document.getElementById('script-save');
+  if (b && state.me?.user?.role !== 'owner') { b.textContent = 'View only'; b.disabled = true; return; }
   if (b) { b.textContent = 'Saved'; b.classList.add('is-saved'); }
 }
 function markSettingsDirty() {
   if (state.settingsDirty) return;
   state.settingsDirty = true;
   const b = document.getElementById('settings-save');
+  if (b && state.me?.user?.role !== 'owner') return; // setters: view only
   if (b) { b.textContent = 'Save Changes'; b.classList.remove('is-saved'); }
 }
 function setSettingsSaved() {
   state.settingsDirty = false;
   const b = document.getElementById('settings-save');
+  if (b && state.me?.user?.role !== 'owner') { b.textContent = 'View only'; b.disabled = true; return; }
   if (b) { b.textContent = 'Saved'; b.classList.add('is-saved'); }
 }
 /* Capture current Settings form values from the DOM into state.settings.settings before a
