@@ -1270,12 +1270,11 @@ app.post('/api/auth/magic-link', async (req, res) => {
 // Opening the link only shows a Continue button; the POST behind it consumes the
 // one-time token. Chat apps and mail clients prefetch links for previews, which
 // used to spend the token before the person ever tapped it.
-const magicPage = (token) => '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Sign in to dmSetter</title></head>'
-  + '<body style="font-family:Inter,system-ui,sans-serif;background:#171a21;color:#f9fafa;display:grid;place-items:center;min-height:100vh;margin:0;text-align:center;padding:24px">'
-  + '<form method="post" action="/auth/magic" style="max-width:380px"><h2 style="font-weight:600;margin:0 0 8px">Sign in to dmSetter</h2>'
-  + '<p style="color:#a7abb4;line-height:1.6;margin:0 0 20px">Tap continue to finish signing in on this device.</p>'
+const magicPage = (token) => '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Sign in to dmSetter</title>' + PAGE_HEAD + '</head>'
+  + '<body class="center"><form method="post" action="/auth/magic" class="panel">' + PAGE_BRAND + '<h1>Sign in to dmSetter</h1>'
+  + '<p>Tap continue to finish signing in on this device.</p>'
   + '<input type="hidden" name="token" value="' + String(token).replace(/[^A-Za-z0-9_-]/g, '') + '">'
-  + '<button type="submit" style="background:#6366f1;color:#fff;border:0;border-radius:10px;padding:12px 22px;font-size:15px;font-weight:600;cursor:pointer">Continue</button></form></body></html>';
+  + '<button type="submit">Continue</button></form></body></html>';
 const expiredPage = () => legalPage('Link expired', [['Sign-in link', 'That link has expired or was already used. Go back to the app and request a new one.']]);
 app.get('/auth/magic', (req, res) => {
   if (!peekMagicLink(req.query.token)) return res.status(400).type('html').send(expiredPage());
@@ -2484,13 +2483,34 @@ if (igRefreshTimer.unref) igRefreshTimer.unref();
 // Real, honest policy pages so the app can go Live. Generic by design — the
 // owner can edit the copy; they satisfy Meta's Privacy Policy / Data Deletion
 // requirements for an Instagram-messaging app.
+// Shared look for the server-rendered pages (legal, sign-in continue, errors):
+// the same tokens as public/css/app.css, light or dark from the app's saved
+// theme, falling back to the system setting.
+const PAGE_HEAD = '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+  + '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap">'
+  + '<script>try{var t=localStorage.getItem("dmsetter-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>'
+  + '<style>'
+  + ':root{color-scheme:dark;--bg:#0b0d12;--card:#141821;--border:#262c38;--text:#eef0f5;--muted:#a1a9b8;--faint:#8790a1;--accent:#5558e6;--accent-hover:#6266ee;--link:#a5b4fc;--focus:#818cf8}'
+  + '@media (prefers-color-scheme:light){:root:not([data-theme=dark]){color-scheme:light;--bg:#f5f6f8;--card:#fff;--border:#e2e5eb;--text:#0f172a;--muted:#4a5466;--faint:#5d6879;--accent:#4f46e5;--accent-hover:#4338ca;--link:#4338ca;--focus:#4f46e5}}'
+  + ':root[data-theme=light]{color-scheme:light;--bg:#f5f6f8;--card:#fff;--border:#e2e5eb;--text:#0f172a;--muted:#4a5466;--faint:#5d6879;--accent:#4f46e5;--accent-hover:#4338ca;--link:#4338ca;--focus:#4f46e5}'
+  + '*{box-sizing:border-box}body{font-family:"Plus Jakarta Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);margin:0;padding:56px 20px;line-height:1.65;-webkit-font-smoothing:antialiased}'
+  + 'body.center{display:grid;place-items:center;min-height:100vh;min-height:100dvh;padding:24px}'
+  + 'main{max-width:700px;margin:0 auto;background:var(--card);border:1px solid var(--border);border-radius:16px;padding:40px 44px}'
+  + '.panel{width:100%;max-width:400px;background:var(--card);border:1px solid var(--border);border-radius:20px;padding:40px 32px;text-align:center}'
+  + '.brand{display:inline-flex;align-items:center;gap:10px;font-weight:800;letter-spacing:-.03em;font-size:17px;margin-bottom:28px;color:var(--text);text-decoration:none}'
+  + '.brand i{width:30px;height:30px;border-radius:9px;background:var(--accent);display:inline-grid;place-items:center}'
+  + 'h1{font-size:28px;line-height:1.2;letter-spacing:-.03em;font-weight:800;margin:0 0 6px}.panel h1{font-size:22px}'
+  + 'h2{font-size:16px;letter-spacing:-.01em;font-weight:700;margin:28px 0 6px}p{color:var(--muted);margin:0;font-size:15px}.panel p{margin:0 0 24px}'
+  + '.upd{color:var(--faint);font-size:13px;margin-bottom:8px}a{color:var(--link);text-underline-offset:2px}'
+  + 'button{font:inherit;font-weight:600;font-size:15px;background:var(--accent);color:#fff;border:0;border-radius:10px;padding:12px 22px;min-height:46px;width:100%;cursor:pointer}'
+  + 'button:hover{background:var(--accent-hover)}:focus-visible{outline:2px solid var(--focus);outline-offset:2px}'
+  + '@media (max-width:600px){body{padding:24px 16px}main{padding:28px 20px}h1{font-size:24px}}'
+  + '</style>';
+const PAGE_BRAND = '<a class="brand" href="/"><i><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></i>dmSetter</a>';
 function legalPage(title, sections) {
   const body = sections.map(([h, p]) => `<h2>${h}</h2><p>${p}</p>`).join('');
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>`
-    + `<style>body{font-family:Inter,system-ui,sans-serif;background:#171a21;color:#e9eaed;margin:0;padding:48px 20px;line-height:1.65}`
-    + `main{max-width:680px;margin:0 auto}h1{color:#f9fafa;font-size:26px;margin:0 0 6px}h2{color:#f9fafa;font-size:17px;margin:28px 0 6px}`
-    + `p{color:#a7abb4;margin:0}.upd{color:#7b8090;font-size:13px;margin-bottom:8px}a{color:#7c8cff}</style></head>`
-    + `<body><main><h1>${title}</h1><p class="upd">Last updated: 2026</p>${body}</main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>${PAGE_HEAD}</head>`
+    + `<body><main>${PAGE_BRAND}<h1>${title}</h1><p class="upd">Last updated: 2026</p>${body}</main></body></html>`;
 }
 const CONTACT = 'Reply to the conversation on Instagram, or email the address listed on the associated Meta app.';
 app.get('/privacy', (req, res) => res.type('html').send(legalPage('Privacy Policy', [

@@ -22,6 +22,9 @@ function renderNav() {
       icon(n.icon, 18) + dot + '<span class="nav-label">' + n.label + '</span>' + pill + badge + '</button>';
   }).join('');
   $('#nav').querySelectorAll('[data-route]').forEach((b) => b.addEventListener('click', () => go(b.dataset.route)));
+  // Phone layout: the nav is a scrollable bottom bar, so keep the active tab in view.
+  const active = $('#nav').querySelector('.nav-item.active');
+  if (active && window.matchMedia && window.matchMedia('(max-width: 680px)').matches) active.scrollIntoView({ block: 'nearest', inline: 'center' });
 }
 function go(route) {
   if(state.versionSaving){toast('Please wait for the version save to finish.');return;}

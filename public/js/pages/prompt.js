@@ -84,7 +84,7 @@ const ACC = {
   red:    { border: 'rgba(248,113,113,.28)', bg: 'rgba(248,113,113,.05)', fg: 'var(--red)' },
   green:  { border: 'rgba(52,211,153,.28)',  bg: 'rgba(52,211,153,.05)',  fg: 'var(--green)' },
   orange: { border: 'rgba(245,158,11,.32)',  bg: 'rgba(245,158,11,.05)',  fg: 'var(--orange)' },
-  indigo: { border: 'rgba(109,109,240,.32)', bg: 'rgba(90,103,242,.05)',  fg: '#8b8bf5' },
+  indigo: { border: 'rgba(109,109,240,.32)', bg: 'rgba(90,103,242,.05)',  fg: 'var(--accent-text)' },
 };
 const audioBtns = '<span class="set-help">Audio replies are not available here.</span>';
 
@@ -164,10 +164,10 @@ function audioAction(act, btn, apply) {
 }
 async function toggleRecord(btn, apply) {
   if (_arsRec) { _arsRec.mr.stop(); return; }                       // second click stops
-  if (!navigator.mediaDevices || !window.MediaRecorder) { toast('Recording not supported here — use Upload', 'err'); return; }
+  if (!navigator.mediaDevices || !window.MediaRecorder) { toast('Recording not supported here. Use Upload', 'err'); return; }
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-  catch { toast('Microphone blocked — allow access or use Upload', 'err'); return; }
+  catch { toast('Microphone blocked. Allow access or use Upload', 'err'); return; }
   const pref = ['audio/mp4', 'audio/webm'].find((t) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t));
   const mr = new MediaRecorder(stream, pref ? { mimeType: pref } : undefined);
   const chunks = [];
@@ -193,7 +193,7 @@ async function uploadVoiceBlob(file, apply) {
     apply(data.id);
     markScriptDirty();
     renderScriptWorkspace();
-    toast('Voice note saved — hit Save to keep it');
+    toast('Voice note saved. Hit Save to keep it');
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -232,7 +232,7 @@ function fupRowHtml(scope, i, f) {
   const body = isAudio ? fupAudioControls(scope, i, f)
     : '<textarea class="fup-msg-ta" data-fup="' + scope + '" data-fi="' + i + '" data-fk="message" placeholder="Follow-up message…">' + esc(f.message) + '</textarea>' +
       '<div class="fup-hint">Use <code>{{FIRST_NAME}}</code> to insert their first name when we have it from the chat; otherwise the tag is removed.' +
-      (f.variation ? ' <b>Variation is on</b> — the AI rewords this each send.' : '') + '</div>';
+      (f.variation ? ' <b>Variation is on</b>: the AI rewords this each send.' : '') + '</div>';
   const delay = '<div class="fup-delay"><span class="fw-label">Send after:</span>' +
     '<input type="number" min="0" class="fw-num" data-fup="' + scope + '" data-fi="' + i + '" data-fk="delay_min" value="' + esc(f.delay_min) + '">' +
     '<span class="fw-to">to</span>' +
@@ -279,7 +279,7 @@ function renderPrompt() {
     '<div class="preview-msgs" id="pv-msgs"></div>' +
     '<div class="preview-composer"><div class="composer">' +
     '<input id="pv-input" placeholder="Type a message…">' +
-    '<button class="send-btn" id="pv-send" style="width:34px;height:34px">' + icon('send', 14) + '</button>' +
+    '<button class="send-btn" id="pv-send" aria-label="Send test message" style="width:34px;height:34px">' + icon('send', 14) + '</button>' +
     '</div></div></div></div>';
 
   renderScriptWorkspace();
@@ -338,15 +338,15 @@ function renderScriptWorkspace() {
     'filetext', ACC.blue,
     '<div class="kb-uploadrow"><button type="button" class="mini-btn" id="kb-upload">' + icon('upload', 15) + 'Upload documents</button>' +
     '<input type="file" id="kb-file" accept=".pdf,.docx,.txt,.md" style="display:none">' +
-    '<span class="kb-hint">PDF, .docx, or .txt — up to 50 files, 25MB each</span></div>' +
+    '<span class="kb-hint">PDF, .docx, or .txt, up to 50 files, 25MB each</span></div>' +
     '<div class="kb-list" id="kb-list"><div class="kb-empty">No documents yet.</div></div>');
 
   // 3. Your prompt — every section is optional and written entirely by the owner.
   const ta = (key, rows, ph) => '<textarea data-sk="' + key + '" rows="' + rows + '" placeholder="' + esc(ph) + '">' + esc(sc[key]) + '</textarea><div data-check-for="' + key + '"></div>';
   const inp = (key, ph) => '<input data-sk="' + key + '" placeholder="' + esc(ph) + '" value="' + esc(sc[key]) + '">';
-  const persona = scriptCard('persona', 'Character & Personality', 'Who the AI is when it texts — attitude, personality, how it treats people', 'wand', ACC.purple,
+  const persona = scriptCard('persona', 'Character & Personality', 'Who the AI is when it texts: attitude, personality, how it treats people', 'wand', ACC.purple,
     '<div class="field-label">Personality</div>' +
-    ta('prompt_persona', 6, 'Describe the character you want the AI to be. Nothing is built in — write it exactly how you want it to come across.') +
+    ta('prompt_persona', 6, 'Describe the character you want the AI to be. Nothing is built in. Write it exactly how you want it to come across.') +
     '<div class="field-label">About You</div>' +
     ta('about_you', 4, 'Background the AI can draw on: who you are, what you do, your experience.'));
   const offer = scriptCard('offer', 'Offer & Social Proof', 'What you sell, who it is for, and the results you want the AI to be able to cite', 'filetext', ACC.blue,
@@ -355,9 +355,9 @@ function renderScriptWorkspace() {
     '<div class="field-label">Client Results</div>' +
     ta('client_results', 4, 'Real results only, one per line.') +
     '<p class="sc-help">The AI can only cite results listed here. How and when it uses them is up to your prompt.</p>');
-  const voice = scriptCard('voice', 'Texting Style', 'Tone, length, punctuation, emoji habits — how your messages should read', 'chats', ACC.green,
+  const voice = scriptCard('voice', 'Texting Style', 'Tone, length, punctuation and emoji habits: how your messages should read', 'chats', ACC.green,
     ta('prompt_voice', 6, 'Describe how you text: tone, message length, casing, punctuation, emoji use, anything to avoid.'));
-  const qual = scriptCard('qual', 'Qualification Sequence', 'How the AI qualifies a lead — your questions, your order, your criteria', 'target', ACC.orange,
+  const qual = scriptCard('qual', 'Qualification Sequence', 'How the AI qualifies a lead: your questions, your order, your criteria', 'target', ACC.orange,
     ta('prompt_qualification', 8, 'Describe how a lead should be qualified: what to ask, in what order, what makes someone qualified or not, and what to do in each case.'));
   const book = scriptCard('book', 'Next-step sequence', 'How the AI guides a qualified customer to the next step', 'calendar', ACC.pink,
     ta('prompt_booking', 8, 'Describe the next step: book, buy, fill out a form, or speak to a person. Explain how to offer and confirm it.'));
@@ -378,7 +378,7 @@ function renderScriptWorkspace() {
       (showX ? '<button type="button" class="row-x" data-obj-x="' + i + '">' + icon('x', 15) + '</button>' : '') +
       '</div></div>';
   }).join('');
-  const objections = scriptCard('objections', 'Objection Handling', 'How the AI answers pushback — in your words, or nothing at all', 'alert', ACC.red,
+  const objections = scriptCard('objections', 'Objection Handling', 'How the AI answers pushback, in your words or not at all', 'alert', ACC.red,
     '<div class="field-label">Approach</div>' +
     ta('prompt_objections', 5, 'Describe how to handle objections in general (price, time, "let me think about it", etc.).') +
     '<div class="section-toprow" style="margin-top:14px"><div class="field-label">Specific handlers</div>' +
@@ -386,10 +386,10 @@ function renderScriptWorkspace() {
     '<div class="obj-list">' + objRows + '</div>');
   const followup = scriptCard('followup', 'Follow-up Instructions', 'What the AI writes when a lead goes quiet', 'stopwatch', ACC.orange,
     ta('prompt_followup', 5, 'Describe how the AI should follow up with a lead who stopped replying: angle, tone, what never to say.') +
-    '<p class="sc-help">Used only when the AI writes a follow-up itself — timings live in <b>Settings › AI Controls</b> and are off until you set them. Core Sequences below send your exact messages instead.</p>');
+    '<p class="sc-help">Used only when the AI writes a follow-up itself. Timings live in <b>Settings › AI Controls</b> and are off until you set them. Core Sequences below send your exact messages instead.</p>');
   const rules = scriptCard('rules', 'Hard Rules', 'Things the AI must never do, no matter what', 'shield', ACC.red,
     ta('prompt_hard_rules', 5, 'One per line. e.g. never quote a price, never mention being an AI, never give medical advice.'));
-  const custom = scriptCard('custom', 'Custom Instructions', 'Anything else — extra rules, edge cases, your own full prompt', 'spark', ACC.purple,
+  const custom = scriptCard('custom', 'Custom Instructions', 'Anything else: extra rules, edge cases, your own full prompt', 'spark', ACC.purple,
     ta('prompt_custom', 6, 'Anything not covered above. You can paste an entire prompt here if you prefer to write it as one piece.'));
 
   // 4. Reaction Criteria
@@ -402,7 +402,7 @@ function renderScriptWorkspace() {
     'heart', ACC.pink,
     '<div class="reaction-toggle-row"><div class="rt-copy"><div class="rt-label">Enable AI reactions</div>' +
     '<div class="rt-help">When on, autopilot may heart messages that match your rules (only if it also replies with text).</div></div>' +
-    switchHtml(sc.reactions_enabled, '', 'id="reactions-switch"') + '</div>' +
+    switchHtml(sc.reactions_enabled, '', 'id="reactions-switch"', 'Reactions') + '</div>' +
     '<div class="divider-faint"></div>' +
     '<div class="section-toprow"><div class="field-label">When to heart...</div>' +
     '<button type="button" class="mini-btn add-btn" data-add="rule">' + icon('plus', 14) + 'Add rule</button></div>' +
@@ -419,7 +419,7 @@ function renderScriptWorkspace() {
       '</div>';
   }).join('');
   const audioArsenal = scriptCard('audio', 'Audio Arsenal',
-    'When your phrase shows up — in the AI\'s reply <b>or</b> in what the lead sends (e.g. they DM <b>INFO</b>) — the first time it comes up they hear your voice note. After that, just text.',
+    'When your phrase shows up in the AI\'s reply <b>or</b> in what the lead sends (e.g. they DM <b>INFO</b>), the first time it comes up they hear your voice note. After that, just text.',
     'volume', ACC.red,
     '<div class="section-toprow" style="justify-content:flex-end"><button type="button" class="mini-btn add-btn" data-add="arsenal">' + icon('plus', 14) + 'Add</button></div>' +
     '<div class="arsenal-list">' + arsRows + '</div>');
@@ -437,7 +437,7 @@ function renderScriptWorkspace() {
   const manualVoice = scriptCard('manual', 'Manual voice arsenal',
     'Upload clips you send yourself from the inbox chat bar (queue or send immediately). Not tied to AI phrase matching.',
     'mic', ACC.green,
-    '<div class="section-toprow"><span class="kb-hint" style="flex:1">Give each clip a short label — it appears when the message is queued. Use the same upload flow as automated arsenal.</span>' +
+    '<div class="section-toprow"><span class="kb-hint" style="flex:1">Give each clip a short label. It appears when the message is queued. Use the same upload flow as automated arsenal.</span>' +
     '<button type="button" class="mini-btn add-btn" data-add="manual">' + icon('plus', 14) + 'Add</button></div>' +
     '<div class="arsenal-list">' + manRows + '</div>');
 
@@ -453,7 +453,7 @@ function renderScriptWorkspace() {
     '<div class="co-body">Add an Initial Message or Audio DM to define what is sent on keyword match.</div></div>' +
     '<div class="kw-subhead">Trigger Keywords</div>' +
     '<input class="mono" data-kt="keywords" placeholder="E.G., CHANGE, FIT, START, COACH" value="' + esc(kt.keywords) + '">' +
-    '<div class="sc-help"><b>' + icon('bolt', 12) + ' Keyword match</b> — Comma-separated. Triggers when the message is only that word, when it is the <b>first word</b>, or when it <b>starts with the keyword</b> (e.g. <span class="mono">COACH I need help</span>) — any case, punctuation ignored. Autopilot turns on for that chat. Works at any point in the thread.</div>' +
+    '<div class="sc-help"><b>' + icon('bolt', 12) + ' Keyword match</b>: comma-separated. Triggers when the message is only that word, when it is the <b>first word</b>, or when it <b>starts with the keyword</b> (e.g. <span class="mono">COACH I need help</span>). Any case, punctuation ignored. Autopilot turns on for that chat. Works at any point in the thread.</div>' +
     '<div class="kw-subhead">Audio DM (Optional Override)</div>' +
     '<div class="btn-row">' + audioBtns + '</div>' +
     '<div class="sc-help">Uses the same Trigger Keywords above. If audio is uploaded, it overrides text keyword replies for matches.</div>' +
@@ -479,11 +479,11 @@ function renderScriptWorkspace() {
         '<button type="button" class="row-x" data-phrase-x="' + i + '">' + icon('x', 15) + '</button></div>').join('')
     : '';
   const aiOn = scriptCard('aion', 'Turn On AI When I Send…',
-    'AI activates when your outbound message matches any phrase below — from the dashboard or your phone.',
+    'AI activates when your outbound message matches any phrase below, from the dashboard or your phone.',
     null, ACC.indigo,
     '<div class="phrase-list">' + phraseRows + '</div>' +
     '<button type="button" class="btn-solid-indigo" data-add="phrase">' + icon('plus', 15) + 'Add phrase</button>' +
-    '<div class="sc-help" style="margin-top:12px"><b>Whole-message match</b> — When you send any of these messages (as coach, incl. from the Instagram app on your phone), autopilot turns on for that chat. Case, punctuation and spacing are ignored, but the message must be the whole phrase. One phrase per field.</div>',
+    '<div class="sc-help" style="margin-top:12px"><b>Whole-message match</b>: when you send any of these messages (as coach, incl. from the Instagram app on your phone), autopilot turns on for that chat. Case, punctuation and spacing are ignored, but the message must be the whole phrase. One phrase per field.</div>',
     { dot: true });
 
   // 9. Core Sequences
@@ -504,7 +504,7 @@ function renderScriptWorkspace() {
     '<span class="chev">' + icon('chevdown', 16) + '</span></div>' +
     '<div class="seq-card-body"><div class="kw-subhead" style="margin-top:0">VSL Message</div>' +
     '<textarea data-sk="call_booked_vsl" rows="6" placeholder="Enter the message to send when someone confirms their booking with a screenshot (e.g., VSL link, next steps, etc.)">' + esc(sc.call_booked_vsl) + '</textarea>' +
-    (vslHasPlaceholder ? '<div class="pv-note" style="padding:6px 0 0">' + icon('alert', 13) + '<span>Replace [VSL LINK] with your real video link — the auto-send skips while the placeholder is present.</span></div>' : '') +
+    (vslHasPlaceholder ? '<div class="pv-note" style="padding:6px 0 0">' + icon('alert', 13) + '<span>Replace [VSL LINK] with your real video link. The auto-send skips while the placeholder is present.</span></div>' : '') +
     '</div></div>';
   const coreSeq = '<div class="core-seq-wrap"><div class="core-seq-head">Core Sequences</div>' +
     seq('seqlead', 'seq_lead', 'Lead Sequence', 'Your exact follow-ups for leads who go quiet before qualifying (empty = none)') +
@@ -890,13 +890,13 @@ async function sendPreview() {
       body: { history: state.preview.history.map((m) => ({ role: m.role === 'lead' ? 'lead' : 'setter', text: m.text })), stage: state.preview.stage },
     });
     out.messages.forEach((m) => state.preview.history.push({ role: 'setter', text: m.text, blocked: m.blocked }));
-    if (out.needs_human) state.preview.notes[state.preview.history.length - 1] = 'Would flag for review — ' + (out.reason || 'needs human');
+    if (out.needs_human) state.preview.notes[state.preview.history.length - 1] = 'Would flag for review: ' + (out.reason || 'needs human');
     if (STAGES.slice(0, 5).includes(out.stage)) {
       state.preview.stage = out.stage;
       const sel = $('#pv-stage'); if (sel) sel.value = out.stage;
     }
   } catch (e) {
-    toast(e.status === 409 ? 'The kill switch is on — AI is paused' : e.message, 'err');
+    toast(e.status === 409 ? 'The kill switch is on, so AI is paused' : e.message, 'err');
     state.preview.history.pop();
   }
   state.preview.busy = false;

@@ -76,7 +76,7 @@ function renderSettings() {
   const outboundText = safeParse(s.outbound_filter_regexes, []).join('\n');
 
   const flagGrid = FLAG_REASONS.map((r) => {
-    const tog = r[0] === 'manual' ? '' : switchHtml(!!flagEnabled[r[0]], '', 'data-flagen="' + r[0] + '"');
+    const tog = r[0] === 'manual' ? '' : switchHtml(!!flagEnabled[r[0]], '', 'data-flagen="' + r[0] + '"', 'Flag: ' + r[1]);
     return '<div class="set-field"><div class="field-label" style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
       '<span>' + esc(r[1]) + '</span>' + tog + '</div>' +
       '<textarea data-flag="' + r[0] + '" placeholder="' + esc(r[2]) + '" style="min-height:74px">' + esc(flagMsgs[r[0]] || '') + '</textarea></div>';
@@ -88,14 +88,14 @@ function renderSettings() {
     '<input type="number" min="0" data-rem-hours="' + i + '" value="' + esc(r.hours_before) + '"></div>' +
     '<div class="set-field" style="flex:1"><div class="field-label" style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
     '<span>Message</span><button type="button" class="row-x" data-rem-x="' + i + '">' + icon('x', 15) + '</button></div>' +
-    '<textarea data-rem-msg="' + i + '" placeholder="Hey {{FIRST_NAME}}, reminder — our call is coming up! {{CALENDLY}}" style="min-height:56px">' + esc(r.message) + '</textarea></div></div>'
+    '<textarea data-rem-msg="' + i + '" placeholder="Hey {{FIRST_NAME}}, reminder, our call is coming up! {{CALENDLY}}" style="min-height:56px">' + esc(r.message) + '</textarea></div></div>'
   ).join('');
 
   $('#settings-page').innerHTML = '<div class="workspace-head"><h1>Settings</h1><button class="btn btn-primary is-saved" id="settings-save">Saved</button></div>' +
     '<div class="settings-wrap"><div class="settings-intro">Configure your account and automation rules</div><div class="settings-col">' +
 
     /* 1 — Account */
-    '<div class="card settings-card">' + cardHeadHtml(chipHtml('user', '#a5b4fc', 'var(--indigo-soft)'), 'Account', 'Your profile and Instagram') +
+    '<div class="card settings-card">' + cardHeadHtml(chipHtml('user', 'var(--accent-text)', 'var(--indigo-soft)'), 'Account', 'Your profile and Instagram') +
     igSectionHtml(state.igStatus) +
     '<div class="set-row" style="margin-top:4px"><div><div class="sr-label">Engine status</div><div class="sr-sub">Anthropic runtime availability</div></div><span class="tag ' + (ai ? 'green' : 'red') + '">' + (ai ? 'API key loaded' : 'No API key') + '</span></div></div>' +
 
@@ -104,7 +104,7 @@ function renderSettings() {
     '<input id="set-calendar" type="text" placeholder="https://calendly.com/you" value="' + esc(s.calendar_link) + '"></div></div>' +
 
     /* 3 — Email notifications */
-    '<div class="card settings-card">' + cardHeadHtml(chipHtml('mail', '#a5b4fc', 'var(--indigo-soft)'), 'Email notifications',
+    '<div class="card settings-card">' + cardHeadHtml(chipHtml('mail', 'var(--accent-text)', 'var(--indigo-soft)'), 'Email notifications',
       'Alerts for call booked, AI handover, scheduling problems at booking-sent (no times / broken link), warnings (missing calendar / VSL), and when Instagram needs reconnecting.') +
     '<div class="set-field"><div class="field-label">Notification emails</div>' +
     '<input id="set-notify" type="text" placeholder="you@example.com, partner@example.com" value="' + esc(s.notify_emails) + '">' +
@@ -117,13 +117,13 @@ function renderSettings() {
     '<div class="card settings-card"><div class="set-field">' +
     '<div class="field-label">' + icon('key', 15) + 'Calendly API Token <span class="info-i">' + icon('info', 14) + '</span></div>' +
     '<p class="set-help top">Optional. When set, the AI can check your Calendly availability when prospects ask about scheduling. Enable <b>Scheduling</b> and <code>users:read</code> under <b>User management</b>. Get your token from <a href="https://calendly.com/integrations/api_webhooks" target="_blank" rel="noopener">Calendly Integrations</a>.</p>' +
-    '<input id="set-calendly-token" class="mono-ph" type="password" autocomplete="off" placeholder="' + (s.calendly_token_set ? 'Token saved — paste a new one to replace it' : 'eyJhbGciOiJIUzI1NiJ9...') + '" value="' + esc(s.calendly_token || '') + '">' +
+    '<input id="set-calendly-token" class="mono-ph" type="password" autocomplete="off" placeholder="' + (s.calendly_token_set ? 'Token saved. Paste a new one to replace it' : 'eyJhbGciOiJIUzI1NiJ9...') + '" value="' + esc(s.calendly_token || '') + '">' +
     '<label class="set-check"><input type="checkbox" id="set-book-dms"' + (s.book_in_dms === '1' ? ' checked' : '') + '><span class="cbx">' + icon('check', 12) + '</span>' +
-    '<span class="cbx-label">Book calls in DMs (Calendly API) — collect intake and book without sending the link first</span></label>' +
+    '<span class="cbx-label">Book calls in DMs (Calendly API): collect intake and book without sending the link first</span></label>' +
     '</div></div>' +
 
     /* 4b — Call Booking (webhook sync + reminders + no-show) */
-    '<div class="card settings-card">' + cardHeadHtml(chipHtml('calendar', '#a5b4fc', 'var(--indigo-soft)'), 'Call Booking', 'Auto-fire your VSL and reminders the moment a lead books') +
+    '<div class="card settings-card">' + cardHeadHtml(chipHtml('calendar', 'var(--accent-text)', 'var(--indigo-soft)'), 'Call Booking', 'Auto-fire your VSL and reminders the moment a lead books') +
     '<div class="set-row" style="padding-top:0">' +
     (state.settings.calendlyWebhookConfigured
       ? '<div><div class="sr-label">Booking sync</div></div><span class="tag green">Booking sync connected</span>'
@@ -135,34 +135,34 @@ function renderSettings() {
     '<div class="reminders-list" style="display:flex;flex-direction:column;gap:12px">' + reminderRows + '</div>' +
     '<button type="button" class="mini-btn add-btn" id="set-rem-add" style="margin-top:8px">' + icon('plus', 14) + 'Add reminder</button></div>' +
     '<div class="set-field"><div class="field-label">No-show message</div>' +
-    '<textarea id="set-noshow-msg" placeholder="Hey {{FIRST_NAME}}, looks like we missed each other on the call — want to grab a new time? {{CALENDLY}}">' + esc(s.noshow_message) + '</textarea></div>' +
+    '<textarea id="set-noshow-msg" placeholder="Hey {{FIRST_NAME}}, looks like we missed each other on the call. Want to grab a new time? {{CALENDLY}}">' + esc(s.noshow_message) + '</textarea></div>' +
     '</div>' +
 
     /* 5 — Autopilot */
-    '<div class="card settings-card">' + cardHeadHtml(chipHtml('robot', '#a5b4fc', 'var(--indigo-soft)'), 'Autopilot', 'Let AI handle conversations automatically') +
-    '<div class="set-sub ring"><div class="set-sub-head">' + chipHtml('stopwatch', '#a5b4fc', 'var(--indigo-soft)') +
+    '<div class="card settings-card">' + cardHeadHtml(chipHtml('robot', 'var(--accent-text)', 'var(--indigo-soft)'), 'Autopilot', 'Let AI handle conversations automatically') +
+    '<div class="set-sub ring"><div class="set-sub-head">' + chipHtml('stopwatch', 'var(--accent-text)', 'var(--indigo-soft)') +
     '<span class="st">Response Time <span class="tag indigo set-badge">Important</span></span></div>' +
-    '<p class="set-help">Total time from the lead’s message to the reply landing (feels more human). The AI’s thinking time counts toward it — if thinking runs past the window, the reply sends as soon as it’s ready.</p>' +
-    '<div class="rt-controls"><input id="set-resp-min" type="number" min="0" value="' + esc(s.response_min) + '"><span class="rt-to">to</span>' +
-    '<input id="set-resp-max" type="number" min="0" value="' + esc(s.response_max) + '">' +
+    '<p class="set-help">Total time from the lead’s message to the reply landing (feels more human). The AI’s thinking time counts toward it. If thinking runs past the window, the reply sends as soon as it’s ready.</p>' +
+    '<div class="rt-controls"><input id="set-resp-min" aria-label="Minimum response time" type="number" min="0" value="' + esc(s.response_min) + '"><span class="rt-to">to</span>' +
+    '<input id="set-resp-max" aria-label="Maximum response time" type="number" min="0" value="' + esc(s.response_max) + '">' +
     '<select id="set-resp-unit"><option value="seconds" selected>seconds</option></select></div></div>' +
     '<div class="set-sub"><div class="set-inline"><div class="set-inline-txt"><div class="st">Instagram typing indicator</div>' +
     '<p class="set-help">Mark as read before each reply when possible, show typing, then send. For queued messages this lines up with the countdown (presence starts early enough to finish at 0; up to 30s lead-in). Delay scales with message length (autopilot only; dashboard manual sends go out immediately).</p></div>' +
-    switchHtml(s.typing_indicator === '1', '', 'id="set-typing"') + '</div></div></div>' +
+    switchHtml(s.typing_indicator === '1', '', 'id="set-typing"', 'Instagram typing indicator') + '</div></div></div>' +
 
     /* 6 — Qualification Criteria */
-    '<div class="card settings-card">' + cardHeadHtml(chipHtml('target', '#a5b4fc', 'var(--indigo-soft)'), 'Qualification Criteria', 'Filter who the AI engages with') +
+    '<div class="card settings-card">' + cardHeadHtml(chipHtml('target', 'var(--accent-text)', 'var(--indigo-soft)'), 'Qualification Criteria', 'Filter who the AI engages with') +
     '<div class="set-two"><div class="set-field"><div class="field-label">Languages</div>' +
     '<input id="set-languages" type="text" placeholder="English" value="' + esc(s.languages) + '"></div>' +
     '<div class="set-field"><div class="field-label">Minimum Age</div>' +
     '<input id="set-minage" type="text" placeholder="18" value="' + esc(s.min_age) + '"></div></div></div>' +
 
     /* 7 — Flag Handling */
-    '<div class="card settings-card">' + cardHeadHtml(chipHtml('alert', 'var(--red)', 'var(--red-soft)'), 'Flag Handling', 'Choose which scenarios pull a human in — the AI handles everything else itself') +
+    '<div class="card settings-card">' + cardHeadHtml(chipHtml('alert', 'var(--red)', 'var(--red-soft)'), 'Flag Handling', 'Choose which scenarios pull a human in. The AI handles everything else itself') +
     '<p class="set-help" style="margin:-4px 0 4px">Toggle on only the scenarios that should flag a chat for your review. A normal ending (a "no thanks", a cold lead, someone who can\'t afford it) is never flagged unless you turn its scenario on.</p>' +
     '<div class="set-sub"><div class="set-inline"><div class="set-inline-txt"><div class="st">Send final message before flagging</div>' +
     '<p class="set-help">If enabled, this message is queued and sent before the conversation is flagged.</p></div>' +
-    switchHtml(s.flag_send_final === '1', '', 'id="set-flag-final"') + '</div></div>' +
+    switchHtml(s.flag_send_final === '1', '', 'id="set-flag-final"', 'Send final message before flagging') + '</div></div>' +
     '<div class="set-field"><div class="field-label">Final message</div>' +
     '<textarea id="set-flag-msg" placeholder="No worries, appreciate the reply.">' + esc(s.flag_final_message) + '</textarea>' +
     '<p class="set-help">Fallback message used when no reason-specific message is set.</p></div>' +
@@ -181,23 +181,23 @@ function renderSettings() {
 
     /* EXTRA — AI Controls (dmSetter engine, not in SetDM) */
     '<div class="card settings-card">' + cardHeadHtml(chipHtml('shield', 'var(--red)', 'var(--red-soft)'), 'AI Controls', 'dmSetter engine controls') +
-    '<div class="set-row"><div><div class="sr-label">Kill switch</div><div class="sr-sub">' + (s.kill_switch === '1' ? 'ON — the AI is paused everywhere' : 'Off — the AI is live') + '</div></div>' +
-    switchHtml(s.kill_switch === '1', 'sw-red', 'id="kill-switch"') + '</div>' +
+    '<div class="set-row"><div><div class="sr-label">Kill switch</div><div class="sr-sub">' + (s.kill_switch === '1' ? 'ON: the AI is paused everywhere' : 'Off: the AI is live') + '</div></div>' +
+    switchHtml(s.kill_switch === '1', 'sw-red', 'id="kill-switch"', 'Kill switch') + '</div>' +
     '<div class="set-row"><div><div class="sr-label">Default mode for new leads</div><div class="sr-sub">Applied when a conversation is created</div></div>' +
     '<select id="default-mode">' + modeOpts + '</select></div>' +
     '<div class="set-row"><div><div class="sr-label">Strip dashes from outbound messages</div><div class="sr-sub">Off by default. When on, em/en dashes and spaced hyphens in every outbound message become commas.</div></div>' +
-    switchHtml(s.strip_dashes === '1', '', 'id="set-strip-dashes"') + '</div>' +
+    switchHtml(s.strip_dashes === '1', '', 'id="set-strip-dashes"', 'Strip dashes from outbound messages') + '</div>' +
     '<div class="set-row"><div><div class="sr-label">AI follow-up #1 (hours)</div><div class="sr-sub">Hours of silence before the AI writes a follow-up from your Follow-up Instructions (AI Script). Blank/0 = no AI follow-ups.</div></div>' +
-    '<input id="fu1" type="number" min="0" value="' + esc(s.followup_1_hours || '') + '"></div>' +
+    '<input id="fu1" aria-label="Follow-up 1 delay in hours" type="number" min="0" value="' + esc(s.followup_1_hours || '') + '"></div>' +
     '<div class="set-row"><div><div class="sr-label">AI follow-up #2 (hours)</div><div class="sr-sub">Hours after the first. Blank/0 to stop after #1.</div></div>' +
-    '<input id="fu2" type="number" min="0" value="' + esc(s.followup_2_hours || '') + '"></div>' +
+    '<input id="fu2" aria-label="Follow-up 2 delay in hours" type="number" min="0" value="' + esc(s.followup_2_hours || '') + '"></div>' +
     '<div class="set-row"><div><div class="sr-label">AI follow-up #3 (hours)</div><div class="sr-sub">Hours after the second. Blank/0 to disable.</div></div>' +
-    '<input id="fu3" type="number" min="0" value="' + esc(s.followup_3_hours || '') + '"></div>' +
+    '<input id="fu3" aria-label="Follow-up 3 delay in hours" type="number" min="0" value="' + esc(s.followup_3_hours || '') + '"></div>' +
     '<div class="set-row"><div><div class="sr-label">AI follow-up #4 (hours)</div><div class="sr-sub">Hours after the third. Blank/0 to disable.</div></div>' +
-    '<input id="fu4" type="number" min="0" value="' + esc(s.followup_4_hours || '') + '"></div>' +
+    '<input id="fu4" aria-label="Follow-up 4 delay in hours" type="number" min="0" value="' + esc(s.followup_4_hours || '') + '"></div>' +
     '<div class="set-field" style="margin-top:16px"><div class="field-label">Outbound filter</div>' +
     '<textarea id="set-outbound" class="mono-ph" placeholder="[£$€]\\s*\\d" style="font-family:\'SF Mono\',ui-monospace,monospace;font-size:12.5px">' + esc(outboundText) + '</textarea>' +
-    '<p class="set-help">Regex tripwires — matching messages are blocked and flagged, never sent. One per line.</p></div></div>' +
+    '<p class="set-help">Regex tripwires. Matching messages are blocked and flagged, never sent. One per line.</p></div></div>' +
 
     '</div></div>';
 
@@ -212,7 +212,7 @@ function renderSettings() {
       state.settings = Object.assign({}, state.settings, { settings: Object.assign({}, out.settings, state.settings.settings, { kill_switch: out.settings.kill_switch }) });
       renderKillDot(); renderSettings();
       if (wasDirty) markSettingsDirty(); else setSettingsSaved();
-      toast(out.settings.kill_switch === '1' ? 'Kill switch ON — AI paused everywhere' : 'Kill switch off — AI live');
+      toast(out.settings.kill_switch === '1' ? 'Kill switch ON: AI paused everywhere' : 'Kill switch off: AI live');
     } catch (err) { toast(err.message, 'err'); }
   });
 
@@ -310,7 +310,7 @@ function renderSettings() {
     const orig = igSync.innerHTML; igSync.disabled = true; igSync.innerHTML = icon('chats', 14) + 'Syncing your Instagram…';
     try {
       const out = await api('/api/instagram/sync-history', { method: 'POST' });
-      toast('Synced ' + out.threads + ' chat' + (out.threads === 1 ? '' : 's') + ' — imported ' + out.messages + ' new message' + (out.messages === 1 ? '' : 's'));
+      toast('Synced ' + out.threads + ' chat' + (out.threads === 1 ? '' : 's') + ', imported ' + out.messages + ' new message' + (out.messages === 1 ? '' : 's'));
       if (state.route === 'messages') loadConvs();
     } catch (e) { toast(e.message, 'err'); }
     finally { igSync.disabled = false; igSync.innerHTML = orig; }
@@ -353,7 +353,7 @@ function renderSettings() {
 
   /* ---- toast-only stubs ---- */
   const del = $('#set-delete');
-  if (del) del.addEventListener('click', () => toast('Data deletion is handled manually — email aisetdm@gmail.com.'));
+  if (del) del.addEventListener('click', () => toast('Data deletion is handled manually. Email aisetdm@gmail.com.'));
   const invite = $('#set-invite');
   if (invite) invite.addEventListener('click', () => toast('Team invites are coming soon.'));
 }

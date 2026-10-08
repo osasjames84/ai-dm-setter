@@ -11,7 +11,7 @@ async function loadDrafts() {
     (sendable ? '<button class="btn btn-primary" id="drafts-send-all">' + icon('send', 15) + 'Send all (' + sendable + ')</button>' : '') +
     '</div>' +
     (!state.drafts.length
-      ? '<div class="card coming-card"><div class="icon-chip" style="background:var(--indigo-soft);color:#a5b4fc">' + icon('inbox', 24) + '</div>' +
+      ? '<div class="card coming-card"><div class="icon-chip" style="background:var(--indigo-soft);color:var(--accent-text)">' + icon('inbox', 24) + '</div>' +
         '<h2>No drafts waiting</h2><p>When the AI writes a reply in Copilot mode it lands here (and in the thread) for your sign-off.</p></div>'
       : '<div class="drafts-list">' + state.drafts.map((d) => {
         return '<div class="card draft-item">' +
@@ -45,7 +45,7 @@ async function sendAllDrafts(btn) {
   try {
     const r = await api('/api/drafts/send-all', { method: 'POST' });
     const parts = [r.sent + ' sent'];
-    if (r.window) parts.push(r.window + ' outside the 24h window — send from your phone');
+    if (r.window) parts.push(r.window + ' outside the 24h window, send from your phone');
     if (r.flagged) parts.push(r.flagged + ' flagged, left for review');
     if (r.blocked) parts.push(r.blocked + ' blocked by the outbound filter');
     if (r.failed) parts.push(r.failed + ' failed');
@@ -56,7 +56,7 @@ async function sendAllDrafts(btn) {
 /** Approve a draft as-is (sends the AI's original messages). */
 async function approveDraft(id) {
   try { await api('/api/drafts/' + id + '/approve', { method: 'POST' }); toast('Sent to the lead'); loadDrafts(); }
-  catch (e) { toast(e.status === 422 ? 'Blocked by the outbound filter — flagged for review' : e.message, 'err'); loadDrafts(); }
+  catch (e) { toast(e.status === 422 ? 'Blocked by the outbound filter and flagged for review' : e.message, 'err'); loadDrafts(); }
 }
 async function discardDraft(id) {
   if (!confirm('Discard this draft? It will be removed without sending.')) return;
