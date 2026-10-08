@@ -1,108 +1,55 @@
-# Connecting your Instagram
+# Connecting Instagram
 
-This app talks to Instagram through the **official Meta Graph API** only — no
-unofficial automation. It stays dormant (simulator-only) until three environment
-variables are set, then it goes live. Nothing here needs code changes; it's all
-configuration on Meta's side plus three env vars on your server.
+dmSetter talks to Instagram only through Meta's official **Instagram API with Instagram Login** (graph.instagram.com). There is no unofficial automation, no Facebook Page and no Messenger Platform involved.
 
-The Settings page in the app (gear icon, PIN-gated) shows your live status, the
-exact **webhook callback URL**, the verify token state, the subscribe field, and
-the required permissions. Keep it open while you do this — the "Test connection"
-button confirms each step.
+Permissions requested: `instagram_business_basic` and `instagram_business_manage_messages`. Nothing else. (The Facebook Login permissions `instagram_manage_messages` and `pages_manage_metadata` belong to a different flow and are not used.)
 
----
+The full Meta dashboard walkthrough (app creation, webhooks, Business Verification, App Review, screencasts, going Live) is in [docs/META_REVIEW.md](docs/META_REVIEW.md). This page is the short version for day to day use.
 
-## What you need first
+## For a business connecting its account
 
-1. An **Instagram professional account** (Business or Creator — switch in the IG
-   app under Settings → Account type).
-2. A **Meta developer account** at https://developers.facebook.com.
-3. Your app **deployed to a public HTTPS URL** (Meta will not call `localhost`).
-   The webhook URL shown in Settings will use whatever domain the app is served
-   from, e.g. `https://your-app.onrender.com/webhook/instagram`.
+1. The Instagram account must be a **professional** account (Business or Creator).
+2. In the Instagram app: Settings, Messages and story replies, Message controls, Connected tools, turn on **Allow access to messages**.
+3. In dmSetter: Settings (or onboarding), **Connect Instagram**, sign in to Instagram, **Allow**.
+4. dmSetter stores the 60 day token encrypted, refreshes it automatically, and subscribes the account to the `messages` webhook.
+5. While the Meta app is in Development mode, only accounts added as **Instagram Testers** can connect.
 
----
+## For the operator (server side)
 
-## Step 1 — Create the Meta app
+Required env on the server (Railway): `IG_APP_ID`, `IG_APP_SECRET` (Instagram app ID and secret from *API setup with Instagram login*), `IG_VERIFY_TOKEN` (any random string, also pasted into the webhook form), `TOKEN_ENC_KEY`, `PUBLIC_BASE_URL`. Recommended: `META_APP_SECRET` (App settings, Basic, App secret) so webhook signatures verify whichever secret Meta signs with.
 
-1. https://developers.facebook.com/apps → **Create app**.
-2. Choose the use case that exposes **Instagram** messaging (the "Instagram" /
-   business messaging product). Add the **Instagram** product to the app.
-3. In the Instagram product's **API setup with Instagram login**, connect your
-   Instagram professional account.
+Meta dashboard values:
 
-## Step 2 — Collect the three values
+| Setting | Value |
+|---|---|
+| OAuth redirect URI | `https://<domain>/auth/instagram/callback` |
+| Webhook callback URL | `https://<domain>/webhook/instagram` |
+| Webhook verify token | value of `IG_VERIFY_TOKEN` |
+| Webhook field | `messages` |
+| Deauthorize callback | `https://<domain>/webhook/meta/deauthorize` |
+| Data deletion request URL | `https://<domain>/webhook/meta/data-deletion` |
+| Privacy / Terms | `https://<domain>/privacy`, `https://<domain>/terms` |
 
-- **`IG_BUSINESS_ID`** — your Instagram professional account's ID (shown in the
-  Instagram API setup panel; it's a long number like `17841400000000000`).
-- **`IG_PAGE_TOKEN`** — a **long-lived access token** for that account,
-  generated in the Instagram API setup panel. Use a long-lived one so it doesn't
-  expire in an hour.
-- **`IG_VERIFY_TOKEN`** — a secret **you invent** (any random string, e.g. a
-  password-generator value). You'll paste the *same* string into the webhook
-  config in Step 4.
+Settings, Instagram card in the app shows the live connection status and the exact webhook URL for your domain.
 
-## Step 3 — Set the env vars on your server
+### Legacy env token (first workspace only)
 
-On your host (Render, Railway, a VM — wherever `server.js` runs), set:
+Before Instagram Login existed, the first workspace ran on `IG_PAGE_TOKEN` + `IG_BUSINESS_ID` (a long-lived Instagram token generated in the dashboard). That still works as a fallback for the first workspace, but connecting through Instagram Login replaces it, and new setups should not use it.
 
-```
-IG_BUSINESS_ID=17841400000000000
-IG_PAGE_TOKEN=<your long-lived token>
-IG_VERIFY_TOKEN=<the secret you invented>
-```
+## How sending behaves
 
-Restart the server. Open **Settings → Test connection**. If the token and ID are
-right, it flips to **Connected as @yourhandle**. (Verify token can show "Set"
-even before the webhook is wired — that only needs Step 4.)
-
-## Step 4 — Point Meta's webhook at the app
-
-In the Meta app → the Instagram product → **Webhooks / Configure**:
-
-- **Callback URL**: the exact URL from the app's Settings page
-  (`https://your-domain/webhook/instagram`).
-- **Verify token**: the same `IG_VERIFY_TOKEN` value from Step 2.
-- Click verify — Meta sends a `GET` challenge; the app echoes it and the webhook
-  turns green. (This is why the verify token must be set *before* you click.)
-- **Subscribe** to the **`messages`** field.
-
-**Permissions** the app requests (approve them / add to the app):
-`instagram_business_manage_messages`, `pages_manage_metadata`.
-
-## Step 5 — Go live
-
-- New DMs now appear in **Messages** as `instagram` conversations in real time.
-- Each conversation has a per-thread mode: **Copilot** (AI drafts, you approve),
-  **Autopilot** (auto-sends after a short human-like delay), or **Off**.
-- The global **kill switch** (Settings) halts all AI drafting instantly.
-- Booking a call and marking a Sale always require your manual confirmation — the
-  AI can suggest them but never finalizes them.
-
----
-
-## How it behaves
-
-- **Inbound**: `POST /webhook/instagram` → the app parses Meta's payload, creates
-  or updates the Instagram conversation, and runs the engine per the thread mode.
-- **Outbound**: replies go out via the Graph API Send API using `IG_PAGE_TOKEN`.
-  Every message is run through the outbound filter first (blocks currency+digits
-  by default) — a blocked message is held for human review, never sent.
-- **Verification**: `GET /webhook/instagram` echoes Meta's `hub.challenge` only
-  when `hub.verify_token` matches `IG_VERIFY_TOKEN`; otherwise `403`.
+- **Inbound**: `POST /webhook/instagram` verifies Meta's signature, ignores repeats of the same message id, read receipts and reactions, stores the message, and runs the AI per the conversation mode (Off, Copilot, Autopilot).
+- **Outbound**: every send goes through one gate (`lib/instagram.js`) that enforces Instagram's 24 hour window (only reply to people who messaged first, within 24 hours of their last message), pauses while the account needs reconnecting, spaces sends out and caps them per hour. A message that cannot go out is kept as a draft and the conversation is flagged with the reason, for example `outside 24h window`. Reply to those from the Instagram app.
+- **Kill switch** (Settings) stops all AI drafting and sending at once. Booking a call and marking a sale always need the owner's confirmation.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Settings shows "Not connected" | All three env vars set? Server restarted? |
-| "Credentials set but token check failed" | `IG_PAGE_TOKEN` expired or wrong; regenerate a long-lived token. Confirm `IG_BUSINESS_ID` is the IG account id. |
-| Webhook won't verify in Meta | `IG_VERIFY_TOKEN` must be identical on both sides; the app must be on public HTTPS. |
-| DMs don't arrive | Subscribe to the **`messages`** field; confirm the callback URL has no typo. |
-| Tokens are safe | They live only in server env vars — never entered in the browser, never sent to the client. Settings shows *status*, not values. |
-
-## Tokens & privacy
-
-Meta access tokens are **secrets**. Set them only as server environment
-variables. This app never puts them in the browser, in URLs, or in the database,
-and the Settings API reports only whether each is set — never the value.
+| Connect Instagram says "not configured" | `IG_APP_ID` and `IG_APP_SECRET` are missing on the server. |
+| Instagram login says the redirect URI is invalid | The OAuth redirect URI in the dashboard must be exactly `https://<domain>/auth/instagram/callback`. |
+| Webhook will not verify | `IG_VERIFY_TOKEN` must be identical on both sides and deployed before you click Verify; the server must be on public HTTPS. |
+| Webhooks return 403 in the logs | Signature mismatch: set `META_APP_SECRET` (App settings, Basic) as well as `IG_APP_SECRET`. |
+| DMs do not arrive | Subscribe the `messages` field; in Development mode the sender and the business must both be testers; check "Allow access to messages" in the Instagram app. |
+| Banner "Instagram needs reconnecting" | The token was revoked or expired. Settings, Connect Instagram again. Sends stay paused until then. |
+| Conversation flagged "outside 24h window" | The lead has not written in 24 hours. Reply from the Instagram app; the next message from the lead reopens the window. |
