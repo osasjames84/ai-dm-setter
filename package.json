@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node test/pure.test.mjs && node test/isolation.test.mjs"
+    "test": "node test/pure.test.mjs && node test/meta-compliance.test.mjs && node test/isolation.test.mjs && node test/meta-e2e.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.109.1",

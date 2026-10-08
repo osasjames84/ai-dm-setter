@@ -45,7 +45,8 @@ async function sendAllDrafts(btn) {
   try {
     const r = await api('/api/drafts/send-all', { method: 'POST' });
     const parts = [r.sent + ' sent'];
-    if (r.window) parts.push(r.window + ' outside the 24h window — send from your phone');
+    if (r.window) parts.push(r.window + ' outside the 24h window, reply from the Instagram app');
+    if (r.parked) parts.push(r.parked + ' held for review (send limits or Instagram connection)');
     if (r.flagged) parts.push(r.flagged + ' flagged, left for review');
     if (r.blocked) parts.push(r.blocked + ' blocked by the outbound filter');
     if (r.failed) parts.push(r.failed + ' failed');

@@ -430,7 +430,7 @@ function wireThread() {
       if(epoch!==state.sessionEpoch)return;
       if(e.status!==422) restoreFailedMessage(c.id,text);
       toast(e.status === 422 ? 'Blocked by the outbound filter — flagged for review' : e.message, 'err');
-      if (e.status === 422) loadThread(c.id);
+      if (e.status === 422 || e.status === 409) loadThread(c.id); // 409: parked (24h window, limits, reconnect), show the flag
     }
   }
   $('#send-btn').addEventListener('click', sendComposer);
