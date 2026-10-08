@@ -19,9 +19,9 @@ async function loadDrafts() {
           '<div><div class="dh-name">' + esc(d.display_name || d.handle) + '</div>' +
           '<div class="dh-sub">@' + esc(d.handle) + ' &middot; ' + STAGE_ONE[d.conv_stage] + (d.stage_suggestion ? ' &rarr; ' + STAGE_ONE[d.stage_suggestion] : '') + '</div></div>' +
           '<div class="spacer"></div>' +
-          (d.needs_human ? '<span class="tag amber">' + esc(d.reason || 'review') + '</span>' : '') +
-          '<span class="tag">' + timeAgo(d.created_at) + ' ago</span></div>' +
-          d.messages.map((m) => '<div class="draft-msg">' + esc(m) + '</div>').join('') +
+          (d.needs_human ? '<span class="tag amber">' + esc(draftReasonText(d.reason)) + '</span>' : '') +
+          '<span class="tag">' + (timeAgo(d.created_at) === 'now' ? 'just now' : timeAgo(d.created_at) + ' ago') + '</span></div>' +
+          d.messages.filter((m) => String(m || '').trim()).map((m) => '<div class="draft-msg">' + esc(m) + '</div>').join('') +
           '<div class="draft-actions">' +
           '<button class="btn btn-primary btn-sm" data-approve="' + d.id + '">' + icon('check', 14) + 'Approve &amp; send</button>' +
           '<button class="btn btn-ghost btn-sm" data-open="' + d.conversation_id + '">Open conversation</button>' +
@@ -66,4 +66,17 @@ async function discardDraft(id) {
 }
 async function refreshBadge() {
   try { state.drafts = await api('/api/drafts'); renderNav(); } catch (e) { /* ignore */ }
+}
+
+/** Human sentences for machine reason codes on drafts; never show raw codes. */
+function draftReasonText(r) {
+  const known = {
+    ai_not_configured: 'AI is not set up on this server yet',
+    ai_error: 'The AI could not write a reply',
+    needs_human: 'Needs your review',
+  };
+  const k = String(r || '').trim();
+  if (!k) return 'Needs your review';
+  if (known[k.toLowerCase()]) return known[k.toLowerCase()];
+  return /^[A-Z0-9_]+$/.test(k) || /^[a-z0-9]+(_[a-z0-9]+)+$/.test(k) ? 'Needs your review' : k;
 }

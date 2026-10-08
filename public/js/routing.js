@@ -36,8 +36,14 @@ function renderNav() {
     const active = state.route === n.id || (n.id === 'settings' && isSettingsRoute(state.route));
     return '<button class="nav-item' + (active ? ' active' : '') + '" aria-label="' + esc(n.label) + '" title="' + esc(n.label) + '" data-route="' + n.id + '">' +
       icon(n.icon, 18) + dot + '<span class="nav-label">' + n.label + '</span>' + pill + badge + '</button>';
-  }).join('');
+  }).join('') + '<button class="nav-item nav-more" id="nav-more" aria-haspopup="dialog" aria-expanded="false" aria-controls="more-sheet" aria-label="More">' + icon('plus', 18) + '<span class="nav-label">More</span></button>';
   $('#nav').querySelectorAll('[data-route]').forEach((b) => b.addEventListener('click', () => go(b.dataset.route)));
+  const moreBtn = $('#nav-more');
+  if (moreBtn) {
+    const inMore = ['onboarding', 'content', 'settings'].includes(state.route) || isSettingsRoute(state.route);
+    moreBtn.classList.toggle('active', inMore);
+    moreBtn.addEventListener('click', openMoreSheet);
+  }
   // Phone layout: the nav is a scrollable bottom bar, so keep the active tab in view.
   const active = $('#nav').querySelector('.nav-item.active');
   if (active && window.matchMedia && window.matchMedia('(max-width: 680px)').matches) active.scrollIntoView({ block: 'nearest', inline: 'center' });
@@ -75,4 +81,47 @@ function go(route) {
   if (route === 'operator') renderOperator();
   if (route === 'versions') renderVersions();
   if (route === 'analytics') renderAnalytics();
+}
+
+/* Phone layout: the bottom bar holds the four main routes plus More; the rest
+   (Setup, Content, Settings, theme, log out) live in this sheet. */
+function openMoreSheet() {
+  closeMoreSheet();
+  const btn = $('#nav-more');
+  const items = NAV.filter((n) => ['onboarding', 'content', 'settings'].includes(n.id) && (!n.setupOnly || !state.me?.onboarding_complete));
+  const sheet = document.createElement('div');
+  sheet.id = 'more-sheet';
+  sheet.className = 'more-sheet';
+  sheet.setAttribute('role', 'dialog');
+  sheet.setAttribute('aria-modal', 'true');
+  sheet.setAttribute('aria-label', 'More');
+  const themeLabel = ($('#theme-label') && $('#theme-label').textContent) || 'Switch theme';
+  sheet.innerHTML = '<div class="more-backdrop" data-close></div><div class="more-panel">' +
+    items.map((n) => '<button class="more-item" data-route="' + n.id + '">' + icon(n.icon, 18) + '<span>' + esc(n.label) + '</span></button>').join('') +
+    '<button class="more-item" data-act="theme">' + icon('bulb', 18) + '<span>' + esc(themeLabel) + '</span></button>' +
+    '<button class="more-item" data-act="logout">' + icon('logout', 18) + '<span>Log out</span></button>' +
+    '<button class="more-item more-close" data-close>Close</button></div>';
+  document.body.appendChild(sheet);
+  if (btn) btn.setAttribute('aria-expanded', 'true');
+  sheet.querySelectorAll('[data-route]').forEach((b) => b.addEventListener('click', () => { closeMoreSheet(); go(b.dataset.route); }));
+  sheet.querySelector('[data-act="theme"]').addEventListener('click', () => { closeMoreSheet(); $('#theme-toggle') && $('#theme-toggle').click(); });
+  sheet.querySelector('[data-act="logout"]').addEventListener('click', () => { closeMoreSheet(); $('#logout-btn') && $('#logout-btn').click(); });
+  sheet.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => closeMoreSheet(true)));
+  const focusables = () => [...sheet.querySelectorAll('button')];
+  sheet.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeMoreSheet(true); return; }
+    if (e.key === 'Tab') {
+      const f = focusables(), first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  });
+  focusables()[0] && focusables()[0].focus();
+}
+function closeMoreSheet(returnFocus) {
+  const sheet = $('#more-sheet');
+  if (!sheet) return;
+  sheet.remove();
+  const btn = $('#nav-more');
+  if (btn) { btn.setAttribute('aria-expanded', 'false'); if (returnFocus) btn.focus(); }
 }

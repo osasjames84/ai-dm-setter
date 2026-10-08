@@ -256,6 +256,7 @@ function renderThread() {
       '<div class="draft-zone" id="draft-zone"></div>' +
       '<div class="thread-footer"><div class="ai-response-row"><button class="ai-response-btn" id="ai-response-btn">' + icon('bot', 16) + 'AI Response</button></div>' +
       '<div class="composer-wrap">' +
+      '<p class="window-note" id="window-note" role="status" hidden></p>' +
       '<div class="composer">' +
       '<div class="composer-media"><button class="icon-btn" id="voice-btn" title="Voice notes (Instagram only)">' + icon('wave', 18) + '</button>' +
       '<button class="icon-btn" id="insert-btn" title="Quick inserts">' + icon('plus', 18) + '</button></div>' +
@@ -273,7 +274,30 @@ function renderThread() {
     const badge = pane.querySelector('.thread-head .stage-badge');
     if (badge) badge.outerHTML = stageBadge(c.stage);
   }
+  applyWindowState(c);
   renderMsgs();
+}
+/** Instagram only allows replies within 24 hours of the lead's last message.
+ *  Disable the composer once that window is closed (5 minutes early, like the
+ *  server), so nobody can try to message a lead first or too late. */
+function windowState(c) {
+  if (!c || c.channel !== 'instagram') return { open: true };
+  if (typeof c.window_open === 'boolean') return { open: c.window_open, closesAt: c.window_closes_at || null };
+  const leads = (state.thread?.messages || []).filter((m) => m.role === 'lead');
+  const last = leads.length ? leads[leads.length - 1].created_at : c.last_lead_message_at;
+  if (!last) return { open: false, never: true };
+  const closesAt = new Date(new Date(last).getTime() + 24 * 3600e3 - 5 * 60e3);
+  return { open: Date.now() < closesAt.getTime(), closesAt: closesAt.toISOString() };
+}
+function applyWindowState(c) {
+  const w = windowState(c);
+  const note = $('#window-note'), input = $('#composer-input'), send = $('#send-btn');
+  if (!note || !input || !send) return;
+  input.disabled = !w.open; send.disabled = !w.open;
+  note.hidden = w.open;
+  if (!w.open) note.textContent = w.never
+    ? 'Waiting for this person to message you first. Instagram only lets you reply after they do.'
+    : 'Instagram only allows replies within 24 hours of their last message. This window closed ' + (w.closesAt ? new Date(w.closesAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : 'earlier') + '. You can reply as soon as they message again.';
 }
 function dayLabel(iso) {
   if (!iso) return '';
@@ -351,7 +375,7 @@ function renderMsgs() {
         '<div class="msg-bubble' + (isAi ? ' ai-sent' : '') + (isMedia ? ' media' : '') + '">' + msgBubbleInner(m) + '</div>' + '</div></div>';
     }
   });
-  box.innerHTML = html || '<div class="thread-empty" style="flex:none;padding:40px 20px"><div class="icon-chip">' + icon('send', 20) + '</div>No messages yet. Open the conversation with a first DM.</div>';
+  box.innerHTML = html || '<div class="thread-empty" style="flex:none;padding:40px 20px"><div class="icon-chip">' + icon('send', 20) + '</div>Waiting for this person to message you first.</div>';
   if (nearBottom) box.scrollTop = box.scrollHeight;
 }
 function renderDraftZone() {

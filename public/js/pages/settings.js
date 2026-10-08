@@ -213,7 +213,17 @@ function renderSettings() {
       renderKillDot(); renderSettings();
       if (wasDirty) markSettingsDirty(); else setSettingsSaved();
       toast(out.settings.kill_switch === '1' ? 'Kill switch ON: AI paused everywhere' : 'Kill switch off: AI live');
-    } catch (err) { toast(err.message, 'err'); }
+    } catch (err) {
+      // Refused (for example: account not approved yet). Put the switch and the
+      // stored value back to what the server still has, so the label matches
+      // and the next Save does not resend the refused value.
+      const prev = e.target.checked ? '0' : '1';
+      e.target.checked = prev === '1';
+      if (state.settings && state.settings.settings) state.settings.settings.kill_switch = prev;
+      renderKillDot(); renderSettings();
+      if (wasDirty) markSettingsDirty();
+      toast(err.message, 'err');
+    }
   });
 
   /* ---- Call Booking: connect Calendly webhook sync ---- */
@@ -280,7 +290,7 @@ function renderSettings() {
         flag_final_message: $('#set-flag-msg').value,
         flag_messages: JSON.stringify(flagOut),
         flag_enabled: JSON.stringify(flagEnabledOut),
-        kill_switch: $('#kill-switch').querySelector('input').checked ? '1' : '0',
+        // kill_switch is saved by its own toggle above, never by the full form.
         default_mode: $('#default-mode').value,
         strip_dashes: $('#set-strip-dashes').querySelector('input').checked ? '1' : '0',
         followup_1_hours: $('#fu1').value,

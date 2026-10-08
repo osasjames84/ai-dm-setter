@@ -1533,7 +1533,7 @@ const magicPage = (token) => '<!doctype html><html><head><meta charset="utf-8"><
   + '<p>Tap continue to finish signing in on this device.</p>'
   + '<input type="hidden" name="token" value="' + String(token).replace(/[^A-Za-z0-9_-]/g, '') + '">'
   + '<button type="submit">Continue</button></form></body></html>';
-const expiredPage = () => legalPage('Link expired', [['Sign-in link', 'That link has expired or was already used. Go back to the app and request a new one.']], { plain: true });
+const expiredPage = () => legalPage('Link expired', [['Sign-in link', 'That link has expired or was already used. Request a new one and it will arrive in a minute or two.<br><br><a href="/">Request a new link</a>']], { plain: true });
 app.get('/auth/magic', limitPublicIp, (req, res) => {
   if (!peekMagicLink(req.query.token)) return res.status(400).type('html').send(expiredPage());
   res.type('html').send(magicPage(req.query.token));

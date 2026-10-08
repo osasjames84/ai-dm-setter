@@ -5,7 +5,7 @@ function instagramCard(st) {
   const reconnect=ig.needs_reconnect || !!ig.auth_error;
   const owner=state.me?.user?.role==='owner';
   return '<div class="set-sub"><h2>Instagram</h2><p>'+esc(reconnect?'Instagram needs reconnecting.':connected?'Connected'+(ig.username || ig.account?.username ? ' as @'+(ig.username || ig.account.username):''):'Connect your business Instagram account to receive messages.')+'</p>'+
-    (owner && ig.oauth_available!==false?'<a class="btn btn-primary" href="/auth/instagram/start">'+(reconnect?'Reconnect Instagram':'Connect Instagram')+'</a>':'<p>'+(owner?'Instagram login is not configured on this server yet.':'Ask your account owner to manage this connection.')+'</p>')+
+    (owner && ig.oauth_available!==false?(connected && !reconnect?'':'<a class="btn btn-primary" href="/auth/instagram/start">'+(reconnect?'Reconnect Instagram':'Connect Instagram')+'</a>'):'<p>'+(owner?'Instagram login is not configured on this server yet.':'Ask your account owner to manage this connection.')+'</p>')+
     '<button class="btn btn-ghost" id="ig-test">Refresh connection</button>'+
     (connected && owner?'<button class="btn btn-ghost" id="ig-disconnect">Disconnect</button>':'')+'<p role="status" id="ig-action-status"></p></div>';
 }
@@ -53,12 +53,25 @@ function testDrivePassed(job) {
     job.runs.every(r=>!['error','failed'].includes(r.status) && r.verdict!=='fail');
 }
 function canGoLive(me,progress,job) {
+  // The server decides readiness (go_live.ready), including a test drive bound
+  // to the current script, so a restart never forces a paid re-run.
+  if(progress?.go_live && typeof progress.go_live.ready==='boolean')
+    return me?.user?.role==='owner' && progress.go_live.ready;
   return me?.user?.role==='owner' && me?.account?.access_status==='active' &&
     me?.instagram?.connected===true && !me.instagram.needs_reconnect &&
     SETUP_STEPS.every(([key])=>progress?.steps?.[key]===true) && testDrivePassed(job);
 }
+function renderGoLiveBlockers(root) {
+  const box=root.querySelector('#golive-blockers'); if(!box)return;
+  const g=state.onboarding?.go_live; const items=(g && !g.ready && Array.isArray(g.blockers))?g.blockers:[];
+  const stale=!!state.onboarding?.test_drive_stale;
+  box.hidden=!items.length && !stale;
+  const list=items.map(b=>'<li>'+esc(b.message||b.code||'')+'</li>');
+  if(stale && !items.some(b=>/test/i.test(b.code||'')))list.push('<li>Your script changed since the last test drive. Run it again before switching the AI back on.</li>');
+  box.querySelector('ul').innerHTML=list.join('');
+}
 function renderTestDrive(body) {
-  body.innerHTML='<h2>Test your script</h2><p>Run five simulated conversations before enabling automation.</p><button class="btn btn-primary" id="test-start">Run test drive</button><button class="btn btn-ghost" id="test-resume">Refresh results</button><p role="status" id="test-status"></p><div class="test-runs" id="test-runs"></div><button class="btn btn-primary" id="setup-live" disabled>Go live</button><p class="set-help">Requires owner access, an active account, connected Instagram and a passed test of your current script. This enables autopilot for new conversations.</p>';
+  body.innerHTML='<h2>Test your script</h2><p>Run five simulated conversations before enabling automation.</p><button class="btn btn-primary" id="test-start">Run test drive</button><button class="btn btn-ghost" id="test-resume">Refresh results</button><p role="status" id="test-status"></p><div class="test-runs" id="test-runs"></div><div class="golive-blockers" id="golive-blockers" hidden><h3>Before you can go live</h3><ul></ul></div><button class="btn btn-primary" id="setup-live" disabled>Go live</button><p class="set-help">Going live turns on autopilot for new conversations.</p>';
   const start=body.querySelector('#test-start'),resume=body.querySelector('#test-resume'),status=body.querySelector('#test-status'),live=body.querySelector('#setup-live');
   const epoch=state.sessionEpoch,accountId=state.me.account.id,key='dmsetter-test:'+accountId;
   let busy=false,latest=null,blockedResult=false;
@@ -70,6 +83,7 @@ function renderTestDrive(body) {
     start.disabled=busy || ['queued','running'].includes(latest?.status) || state.me.account.access_status!=='active';resume.disabled=busy;
     live.disabled=busy || blockedResult || !canGoLive(state.me,state.onboarding,latest) || !!state.onboarding?.steps.live;
     live.textContent=state.onboarding?.steps.live?'Automation enabled':'Go live';
+    renderGoLiveBlockers(body);
   };
   const draw=job=>{
     latest=job;
@@ -153,7 +167,7 @@ async function renderOperator() {
   const content=document.createElement('div');host.append(content);content.textContent='Loading accounts…';
   try{
     const accounts=await api('/api/admin/accounts');if(!Array.isArray(accounts))throw new Error('Could not read accounts.');if(!content.isConnected)return;
-    content.innerHTML=accounts.map(a=>'<article class="card operator-account"><h2>'+esc(a.name)+'</h2><p>'+esc(a.owner_email||a.id)+' · '+esc(a.access_status)+'</p><button class="btn btn-ghost" data-access="active" data-account="'+esc(a.id)+'">Activate</button><button class="btn btn-ghost" data-access="paused" data-account="'+esc(a.id)+'">Pause</button><button class="btn btn-ghost" data-usage="'+esc(a.id)+'">View AI usage</button><button class="btn btn-ghost" data-overview="'+esc(a.id)+'">Account overview</button><p role="status" class="operator-status"></p><div class="account-overview"></div><div class="usage-result"></div></article>').join('');
+    content.innerHTML=accounts.map(a=>'<article class="card operator-account"><h2>'+esc(a.name)+'</h2><p>'+esc(a.owner_email||a.id)+' · '+esc(a.access_status)+'</p>'+(a.access_status!=='active'?'<button class="btn btn-ghost" data-access="active" data-account="'+esc(a.id)+'">Activate</button>':'')+(a.access_status==='active' && a.id!==state.me?.account?.id?'<button class="btn btn-ghost" data-access="paused" data-account="'+esc(a.id)+'">Pause</button>':'')+'<button class="btn btn-ghost" data-usage="'+esc(a.id)+'">View AI usage</button><button class="btn btn-ghost" data-overview="'+esc(a.id)+'">Account overview</button><p role="status" class="operator-status"></p><div class="account-overview"></div><div class="usage-result"></div></article>').join('');
     content.querySelectorAll('[data-overview]').forEach(button=>button.onclick=()=>showAccountOverview(button.dataset.overview,button.closest('article').querySelector('.account-overview')));
     content.querySelectorAll('[data-access]').forEach(button=>button.addEventListener('click',async()=>{
       const a=accounts.find(a=>a.id===button.dataset.account);if(!confirm((button.dataset.access==='active'?'Activate ':'Pause ')+a.name+'? Activation does not turn on automation.'))return;
