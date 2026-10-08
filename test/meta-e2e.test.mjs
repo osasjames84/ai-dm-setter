@@ -62,7 +62,7 @@ const env = {
   ...process.env, PORT: String(PORT), DATA_DIR: DATA, OWNER_EMAIL: 'owner@example.test', ADMIN_PIN: '4242', ALLOW_LEGACY_PIN: '1',
   IG_GRAPH_BASE: `http://127.0.0.1:${GRAPH_PORT}`, IG_PAGE_TOKEN: 'stub-token', IG_BUSINESS_ID: BIZ, IG_VERIFY_TOKEN: 'verify-me',
   IG_APP_SECRET: SECRET, META_APP_SECRET: 'meta-dashboard-secret', IG_APP_ID: '', ANTHROPIC_API_KEY: '', RESEND_API_KEY: '', SENTRY_DSN: '', BACKUP_S3_BUCKET: '', GROQ_API_KEY: '', OPENAI_API_KEY: '',
-  FAST_TIMERS: '1', IG_RATE_MIN_INTERVAL_MS: '40', IG_RATE_BACKOFF_MS: '400', PUBLIC_BASE_URL: 'http://127.0.0.1:' + PORT,
+  FAST_TIMERS: '1', IG_RATE_MIN_INTERVAL_MS: '150', IG_RATE_BACKOFF_MS: '400', PUBLIC_BASE_URL: 'http://127.0.0.1:' + PORT,
   COMPANY_NAME: 'Test Coaching Ltd', COMPANY_EMAIL: 'privacy@example.test', COMPANY_ADDRESS: '', COMPANY_NUMBER: '00000001',
 };
 let server;
@@ -288,7 +288,7 @@ try {
     await Promise.all(['one', 'two', 'three'].map((t) => api('POST', `/api/conversations/${c.id}/send`, { text: 'spaced ' + t })));
     const mine = sends.slice(before);
     assert.equal(mine.length, 3);
-    for (let i = 1; i < mine.length; i++) assert.ok(mine[i].at - mine[i - 1].at >= 30, 'gap ' + (mine[i].at - mine[i - 1].at));
+    for (let i = 1; i < mine.length; i++) assert.ok(mine[i].at - mine[i - 1].at >= 100, 'gap ' + (mine[i].at - mine[i - 1].at));
   });
 
   // ---- restart mid-send --------------------------------------------------------------

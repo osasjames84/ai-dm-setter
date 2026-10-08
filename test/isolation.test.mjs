@@ -122,6 +122,21 @@ try {
   await test('second account lists zero conversations', async () => { const r = await other.api('GET', '/api/conversations'); assert.equal(r.status, 200); assert.equal(r.json.length, 0); });
   await test('second account cannot open acc_1 conversation by id', async () => { const r = await other.api('GET', '/api/conversations/' + conv.id); assert.equal(r.status, 404); });
   await test('second account cannot post into acc_1 conversation', async () => { const r = await other.api('POST', '/api/conversations/' + conv.id + '/lead-message', { text: 'hi' }); assert.notEqual(r.status, 200); });
+  await test('second account cannot download the platform backup', async () => { const r = await other.api('GET', '/api/backup'); assert.equal(r.status, 403); });
+  await test('second account cannot discard or approve drafts of another account by id', async () => {
+    for (let id = 1; id <= 5; id++) {
+      const d = await other.api('POST', '/api/drafts/' + id + '/discard'); assert.equal(d.status, 404, 'discard ' + id);
+      const a = await other.api('POST', '/api/drafts/' + id + '/approve'); assert.notEqual(a.status, 200, 'approve ' + id);
+    }
+  });
+  await test('bulk mode from another account changes nothing in acc_1', async () => {
+    const before = (await jd.api('GET', '/api/conversations/' + conv.id)).json;
+    const r = await other.api('POST', '/api/conversations/bulk-mode', { ids: [conv.id], mode: 'autopilot' });
+    assert.equal(r.status, 200); assert.equal(r.json.updated, 0);
+    const after = (await jd.api('GET', '/api/conversations/' + conv.id)).json;
+    assert.equal((after.conversation || after).mode, (before.conversation || before).mode);
+  });
+  await test('prompt starter is only the first account\'s', async () => { const r = await other.api('GET', '/api/prompt-starter'); assert.deepEqual(r.json.sections, {}); });
   await test('settings are separate', async () => { const r = await other.api('GET', '/api/settings'); assert.equal(r.json.settings.coach_name || '', ''); assert.equal(r.json.settings.prompt_persona || '', ''); });
   await test('pending account is refused on AI and go-live routes', async () => { const r = await other.api('POST', '/api/onboarding/go-live'); assert.equal(r.status, 403); });
   await test('pending account cannot start a test drive (approval comes first)', async () => { const r = await other.api('POST', '/api/onboarding/test-drive'); assert.equal(r.status, 403); });

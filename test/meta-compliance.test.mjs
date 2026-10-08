@@ -353,7 +353,8 @@ await test('humanizing autopilot delay stays inside the configured response wind
     const d = autopilotDelayMs({ response_min: '60', response_max: '180' });
     assert.ok(d >= 60_000 && d <= 180_000, String(d));
   }
-  for (let i = 0; i < 50; i++) { const d = autopilotDelayMs({}); assert.ok(d >= 10_000 && d <= 30_000); }
+  for (let i = 0; i < 50; i++) { const d = autopilotDelayMs({}); assert.ok(d >= 30_000 && d <= 90_000); }
+  for (let i = 0; i < 50; i++) { const d = autopilotDelayMs({ response_min: '0', response_max: '2' }); assert.ok(d >= 15_000, 'floor ' + d); }
 });
 
 // ---- legal pages ---------------------------------------------------------------

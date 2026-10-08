@@ -240,8 +240,8 @@ const SETTING_DEFAULTS = {
   notify_emails: '',                // extra notification recipients
   calendly_token: '',               // Calendly API token (in-DM booking)
   book_in_dms: '1',                 // "Book calls in DMs" checkbox (checked by default)
-  response_min: '10',               // Autopilot › Response Time min seconds
-  response_max: '30',               // Autopilot › Response Time max seconds
+  response_min: '30',               // Autopilot › Response Time min seconds (server floor 15s)
+  response_max: '90',               // Autopilot › Response Time max seconds
   typing_indicator: '0',            // Instagram typing indicator toggle
   languages: '',
   min_age: '',
@@ -902,7 +902,9 @@ function setStage(convId, stage) {
 }
 function setStageInner(convId, stage) {
   const prev = getConv(convId)?.stage;
-  db.prepare('UPDATE conversations SET stage = ? WHERE id = ?').run(stage, convId);
+  const sa = currentAccount();
+  if (sa) db.prepare('UPDATE conversations SET stage = ? WHERE id = ? AND account_id = ?').run(stage, convId, sa);
+  else db.prepare('UPDATE conversations SET stage = ? WHERE id = ?').run(stage, convId);
   bumpEvent(currentAccountOrFirst('setStage'), 'conversation', convId);
   // Owner email (FEATURE 3) on a fresh call_booked — only on the transition INTO
   // it (prev !== stage) so re-setting the same stage doesn't re-notify. Fire-and-forget.
@@ -1281,7 +1283,13 @@ function setNeedsHuman(convId, reason) {
 
 /** Set a conversation's mode (scheduler drops autopilot → copilot on handoff). */
 function setMode(convId, mode) {
-  if (MODES.includes(mode)) { db.prepare('UPDATE conversations SET mode = ? WHERE id = ?').run(mode, convId); bumpEvent(currentAccountOrFirst('setMode'), 'conversation', convId); }
+  if (!MODES.includes(mode)) return 0;
+  // Scoped like getConv: an id from another account never changes.
+  const a = currentAccount();
+  const n = a ? db.prepare('UPDATE conversations SET mode = ? WHERE id = ? AND account_id = ?').run(mode, convId, a).changes
+              : db.prepare('UPDATE conversations SET mode = ? WHERE id = ?').run(mode, convId).changes;
+  if (n) bumpEvent(currentAccountOrFirst('setMode'), 'conversation', convId);
+  return Number(n) || 0;
 }
 
 /** Count an autopilot/approved AI turn toward the max-2 guardrail. */
@@ -1752,10 +1760,17 @@ function deleteAccountData(accountId) {
       db.prepare('DELETE FROM magic_links WHERE email = ?').run(u.email);
     }
     db.prepare('DELETE FROM users WHERE account_id = ?').run(accountId);
+    // Everything else keyed by account (prompt versions, future tables): sweep
+    // every table that has an account_id column so nothing is left behind.
+    for (const t of db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()) {
+      const cols = db.prepare(`PRAGMA table_info("${t.name.replace(/"/g, '')}")`).all();
+      if (cols.some((c) => c.name === 'account_id')) db.prepare(`DELETE FROM "${t.name.replace(/"/g, '')}" WHERE account_id = ?`).run(accountId);
+    }
     db.prepare('DELETE FROM accounts WHERE id = ?').run(accountId);
   });
   try { fs.rmSync(knowledgeDir(accountId), { recursive: true, force: true }); } catch { /* best effort */ }
   _settingsCache.delete(accountId);
+  _versionCache.delete(accountId);
   closeStreams({ accountId }, 'account_deleted');
 }
 // Owner: body { confirm: "<owner email>" } guards against an accidental click.
@@ -1788,7 +1803,7 @@ const TEMPLATES = (() => {
   } catch (e) { console.warn('[templates] none loaded:', e.message); return []; }
 })();
 app.get('/api/templates', requireAccount, (req, res) => res.json(TEMPLATES));
-app.post('/api/settings/apply-template', requireAccount, (req, res) => {
+app.post('/api/settings/apply-template', requireAccount, requireOwner, (req, res) => {
   const t = TEMPLATES.find((x) => x.id === String(req.body?.id || ''));
   if (!t) return res.status(404).json({ error: 'No such template' });
   const onlyEmpty = req.body?.only_empty !== false;
@@ -1884,7 +1899,7 @@ app.get('/api/onboarding', requireAccount, (req, res) => {
     go_live: { ready: blockers.length === 0, blockers },
   });
 });
-app.post('/api/onboarding/go-live', requireAccount, requireActive, (req, res) => {
+app.post('/api/onboarding/go-live', requireAccount, requireOwner, requireActive, (req, res) => {
   const blockers = goLiveBlockersFor(req.accountId);
   if (blockers.length) return res.status(400).json({ error: blockers[0].message, checks: blockers });
   setSetting('kill_switch', '0');
@@ -1944,6 +1959,8 @@ app.get('/api/onboarding/test-drive/:id', requireAccount, (req, res) => {
 });
 
 app.get('/api/prompt-starter', requireAdmin, (req, res) => {
+  // The starter is the first account's own script; other accounts start from templates.
+  if (req.accountId !== FIRST_ACCOUNT_ID) return res.json({ sections: {}, name: '' });
   res.json({ sections: (STARTER_PROMPT && STARTER_PROMPT.sections) || {}, name: (STARTER_PROMPT && STARTER_PROMPT.name) || '' });
 });
 
@@ -1981,7 +1998,7 @@ app.get('/api/instagram/status', requireAdmin, async (req, res) => {
 
 // FEATURE 4: on-demand SQLite backup download. Runs a FRESH backup first so the
 // owner always gets a current snapshot, then streams it. PIN-gated.
-app.get('/api/backup', requireAdmin, (req, res) => {
+app.get('/api/backup', requireAdmin, requirePlatformAdmin, (req, res) => {
   try {
     const file = runBackup(db, DATA_DIR);
     res.download(file);
@@ -2039,7 +2056,7 @@ app.post('/api/voice', requireAdmin, upload.single('file'), reenterAccount, asyn
 // Server-managed settings: never writable through PUT /api/settings (set by internal flows only).
 // test_drive_* are written only when a real test drive finishes; sending them is ignored.
 const SERVER_MANAGED_SETTINGS = new Set(['ig_auth_error', 'calendly_webhook_id', 'calendly_signing_key', 'content_analysis', 'test_drive_passed_at', 'test_drive_passed_version']);
-app.put('/api/settings', requireAdmin, (req, res) => {
+app.put('/api/settings', requireAdmin, requireOwner, (req, res) => {
   const body = req.body || {};
   // Turning the AI on (kill switch 1 → 0) is go-live: same gates as POST /api/onboarding/go-live.
   if (body.kill_switch != null && !(String(body.kill_switch) === '1' || String(body.kill_switch) === 'true') && getSetting('kill_switch') === '1') {
@@ -2088,7 +2105,7 @@ app.put('/api/prompt/versions/:version', requireAccount, (req, res) => {
   if (!info.changes) return res.status(404).json({ error: 'Not found' });
   res.json({ ok: true });
 });
-app.post('/api/prompt/versions/:version/restore', requireAccount, (req, res) => {
+app.post('/api/prompt/versions/:version/restore', requireAccount, requireOwner, (req, res) => {
   const r = db.prepare('SELECT * FROM prompt_versions WHERE account_id = ? AND version = ?').get(req.accountId, Number(req.params.version));
   if (!r) return res.status(404).json({ error: 'Not found' });
   const sections = parseJ(r.sections_json, {});
@@ -2343,8 +2360,9 @@ app.post('/api/conversations/bulk-mode', requireAdmin, (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).slice(0, 1000) : [];
   const mode = String(req.body?.mode || '');
   if (!MODES.includes(mode)) return res.status(400).json({ error: 'Bad mode' });
-  for (const id of ids) setMode(id, mode); // setMode ignores unknown ids + validates mode
-  res.json({ ok: true, updated: ids.length, mode });
+  let updated = 0;
+  for (const id of ids) updated += setMode(id, mode); // scoped to this account; other ids are ignored
+  res.json({ ok: true, updated, mode });
 });
 
 app.patch('/api/conversations/:id', requireAdmin, (req, res) => {
@@ -2497,7 +2515,7 @@ app.get('/api/drafts', requireAdmin, (req, res) => {
 const draftSendKey = (draftId, i, text) => 'draft:' + draftId + ':' + i + ':' + sha(normForDedupe(text)).slice(0, 16);
 app.post('/api/drafts/:id/approve', requireAdmin, requireActive, async (req, res) => {
   const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(Number(req.params.id));
-  if (!draft) return res.status(404).json({ error: 'Not found' });
+  if (!draft || !getConv(draft.conversation_id)) return res.status(404).json({ error: 'Not found' });
   if (draft.status !== 'pending') return res.status(409).json({ error: 'Draft already resolved' });
   const conv = getConv(draft.conversation_id);
   if (!conv) return res.status(404).json({ error: 'Conversation gone' });
@@ -2594,7 +2612,7 @@ app.post('/api/drafts/send-all', requireAdmin, requireActive, async (req, res) =
 
 app.post('/api/drafts/:id/discard', requireAdmin, (req, res) => {
   const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(Number(req.params.id));
-  if (!draft) return res.status(404).json({ error: 'Not found' });
+  if (!draft || !getConv(draft.conversation_id)) return res.status(404).json({ error: 'Not found' });
   if (draft.status !== 'pending') return res.status(409).json({ error: 'Draft already resolved' });
   db.prepare("UPDATE drafts SET status = 'discarded', resolved_at = ? WHERE id = ?").run(nowIso(), draft.id);
   res.json({ ok: true });
@@ -3082,7 +3100,13 @@ function verifyWebhookSignature(req) {
     // Once Instagram login is configured the secret exists, so signatures are
     // always verified for OAuth-connected accounts; only the env-token setup can
     // run unverified.
-    if (!_igUnsignedWarned) { console.error('[webhook] IG_APP_SECRET is not set — accepting UNVERIFIED Instagram webhooks. Add it on Railway (Meta app → Settings → Basic → App Secret) to enforce signatures.'); _igUnsignedWarned = true; }
+    if (IS_PROD) {
+      // Production never trusts an unsigned webhook: a forged one could open a
+      // messaging window and make autopilot DM an arbitrary user id.
+      if (!_igUnsignedWarned) { console.error('[webhook] IG_APP_SECRET is not set: rejecting all Instagram webhooks in production. Add it on Railway (Meta app > Settings > Basic > App Secret).'); _igUnsignedWarned = true; }
+      return false;
+    }
+    if (!_igUnsignedWarned) { console.error('[webhook] IG_APP_SECRET is not set: accepting UNVERIFIED Instagram webhooks (development only).'); _igUnsignedWarned = true; }
     return true;
   }
   const header = String(req.headers['x-hub-signature-256'] || '');
