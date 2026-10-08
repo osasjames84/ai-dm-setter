@@ -59,7 +59,7 @@ const GRAPH_PORT = graph.address().port;
 // ---- server ------------------------------------------------------------------
 const logLines = [];
 const env = {
-  ...process.env, PORT: String(PORT), DATA_DIR: DATA, OWNER_EMAIL: 'owner@example.test', ADMIN_PIN: '4242',
+  ...process.env, PORT: String(PORT), DATA_DIR: DATA, OWNER_EMAIL: 'owner@example.test', ADMIN_PIN: '4242', ALLOW_LEGACY_PIN: '1',
   IG_GRAPH_BASE: `http://127.0.0.1:${GRAPH_PORT}`, IG_PAGE_TOKEN: 'stub-token', IG_BUSINESS_ID: BIZ, IG_VERIFY_TOKEN: 'verify-me',
   IG_APP_SECRET: SECRET, META_APP_SECRET: 'meta-dashboard-secret', IG_APP_ID: '', ANTHROPIC_API_KEY: '', RESEND_API_KEY: '', SENTRY_DSN: '', BACKUP_S3_BUCKET: '', GROQ_API_KEY: '', OPENAI_API_KEY: '',
   FAST_TIMERS: '1', IG_RATE_MIN_INTERVAL_MS: '40', IG_RATE_BACKOFF_MS: '400', PUBLIC_BASE_URL: 'http://127.0.0.1:' + PORT,
