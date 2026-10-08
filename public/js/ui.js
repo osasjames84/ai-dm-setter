@@ -31,12 +31,12 @@ const STAGE_INFO = {
   lead: 'New conversation, no meaningful exchange yet',
   engaged: 'The lead has meaningfully replied at least once',
   qualifying: 'The AI is learning their goal and situation',
-  qualified: 'They fit and are warm — moving toward booking',
+  qualified: 'They fit and are warm, moving toward booking',
   booking_sent: 'Call times proposed, waiting on a pick',
   call_booked: 'A concrete day + time agreed (human-confirmed)',
   sale: 'Completed purchase (human-confirmed)',
   routed: 'Sent to the community or free guide instead',
-  dead: 'Gone cold or not a fit — revivable',
+  dead: 'Gone cold or not a fit, revivable',
 };
 // SetDM's stage colours (HSL tokens lifted from their stylesheet). Small solid
 // pills; text is white on the saturated stages, near-white on the greys.
@@ -46,7 +46,7 @@ const STAGE_HSL = {
   sale: '142 70% 45%', routed: '195 85% 48%', dead: '230 10% 48%',
 };
 function stageBadge(stage, extraCls) {
-  return '<span class="stage-badge ' + (extraCls || '') + '" style="background:hsl(' + (STAGE_HSL[stage] || STAGE_HSL.lead) + ')">' + STAGE_ONE[stage] + '</span>';
+  return '<span class="stage-badge ' + (extraCls || '') + '" style="--stage:hsl(' + (STAGE_HSL[stage] || STAGE_HSL.lead) + ')">' + STAGE_ONE[stage] + '</span>';
 }
 // SetDM avatars are flat dark circles with the initial (real IG photos would
 // replace them). We match: solid --secondary fill, no gradients.
@@ -81,6 +81,6 @@ function callTimeFmt(iso) {
   if (!iso) return '';
   return new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
-function switchHtml(on, cls, attrs) {
-  return '<label class="switch ' + (cls || '') + '" ' + (attrs || '') + '><input type="checkbox"' + (on ? ' checked' : '') + '><span class="track"></span><span class="knob"></span></label>';
+function switchHtml(on, cls, attrs, name) {
+  return '<label class="switch ' + (cls || '') + '" ' + (attrs || '') + '><input type="checkbox"' + (on ? ' checked' : '') + (name ? ' aria-label="' + esc(name) + '"' : '') + '><span class="track"></span><span class="knob"></span></label>';
 }

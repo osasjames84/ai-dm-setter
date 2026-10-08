@@ -359,3 +359,39 @@ POST /webhook/meta/data-deletion      Meta's data deletion callback (signed_requ
 Booking links the AI sends carry ?utm_content=<conversation id>; Calendly bookings match on it first (E.12).
 Inbound photos from leads arrive as "[photo: one-line description]" when image_vision is on (E.10).
 ```
+
+## Release gates contract (branch w-backend-gates)
+
+```
+Onboarding
+GET  /api/onboarding                  → { steps: { instagram, template, sections, next_step, test_drive, live }, access_status,
+                                          test_drive: { passed, stale, passed_at, passed_version, prompt_version, min_runs },
+                                          test_drive_stale, go_live: { ready, blockers: [ { section, level: "error", message } ] } }
+       steps.test_drive = passed on the CURRENT prompt version. steps.live = active + kill switch off + Instagram + no script errors.
+       blocker sections: access, instagram, prompt_* / next_step (script errors), test_drive
+POST /api/onboarding/go-live          → { ok } | 400 { error, checks: blockers } | 403 when not active
+PUT  /api/settings                    kill_switch "0" while it is "1" → 409 { error, checks } unless go-live is ready (nothing is saved)
+                                      test_drive_passed_at / test_drive_passed_version are ignored; response gains "ignored": [keys] when sent with a different value
+POST /api/settings/apply-template     response gains "prompt_version" (a template apply records a version)
+Test drive jobs gain "prompt_version" and "counts_for_go_live". Only a finished job with >= 5 personas, every run done and none "fail", counts.
+
+Inbox
+GET  /api/conversations/:id           messages[] gain "id"
+POST /api/conversations/:id/seen      { message_id } | { at } | {} → { ok, last_seen_at }   (400 for a message of another thread or a bad timestamp; never moves back)
+
+Sessions and live updates
+POST /api/logout/all                  → { ok, sessions_closed }   every session of the user ends, and their streams
+GET  /api/events                      429 when the account already has SSE_MAX_PER_ACCOUNT (20) streams. The server may end a stream
+                                      (event: bye, data: { reason }) on logout, removal, account deletion or a revoked session.
+
+Auth
+POST /api/auth/magic-link             429 { error, retry_after_s } when rate limited; 503 (no mail provider, production) or 502 (send failed) with a plain error
+POST /api/team/invite                 502 { error, added: true } when the member was added but the email could not be sent
+Legacy x-admin-pin works only with ALLOW_LEGACY_PIN=1.
+
+Analytics
+GET  /api/analytics                   gains "timezone" (IANA) and "timezone_source": "account"|"server"; lead_messages_by_hour uses it
+```
+
+Server env (optional): ALLOW_LEGACY_PIN=1, OPEN_LOGIN_IN_PRODUCTION=1, SSE_MAX_PER_ACCOUNT (20), SSE_REVALIDATE_MS (60000),
+RATE_LIMIT_AUTH_IP (20 per 15 min), RATE_LIMIT_AUTH_EMAIL (5 per 15 min), RATE_LIMIT_AUTH_ACCOUNT (15 per 15 min), RATE_LIMIT_PUBLIC_IP (60 per min), RATE_LIMIT_INVITE_ACCOUNT (20 per hour).

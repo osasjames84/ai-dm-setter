@@ -59,7 +59,7 @@ async function toggleSpawnPop() {
   }
   holder.innerHTML = '<div class="spawn-pop"><div class="sp-title">Spawn a simulated lead</div>' +
     state.personas.map((p) => '<button data-persona="' + esc(p.id) + '"><div>' + esc(p.name) + '</div><div class="sp-handle">@' + esc(p.handle) + '</div></button>').join('') +
-    '<button data-persona=""><div>Blank test lead</div><div class="sp-handle">@test_lead &mdash; you type the lead side</div></button></div>';
+    '<button data-persona=""><div>Blank test lead</div><div class="sp-handle">@test_lead, you type the lead side</div></button></div>';
   holder.querySelectorAll('[data-persona]').forEach((b) => b.addEventListener('click', async () => {
     holder.innerHTML = '';
     try {
@@ -172,7 +172,7 @@ function renderConvList() {
       '</div>' +
       '<div class="conv-preview">' + esc(c.last_text || 'No messages yet') + '</div></div>' +
       '<div class="conv-right">' + (unread?'<span class="unread-count" aria-label="'+unread+' unread messages">'+unread+'</span>':'') +
-      (sel ? '' : ('<span class="mini-switch-wrap" data-togglewrap>' + switchHtml(auto, '', 'data-modetoggle="' + c.id + '"') +
+      (sel ? '' : ('<span class="mini-switch-wrap" data-togglewrap>' + switchHtml(auto, '', 'data-modetoggle="' + c.id + '"', 'Autopilot for ' + (c.display_name || c.handle)) +
         '<span class="mini-label' + (auto ? ' ai' : '') + '">' + (auto ? 'AI' : 'Off') + '</span></span>')) +
       '</div></div>';
   }).join('');
@@ -208,10 +208,13 @@ async function loadThread(id) {
   renderThread();
   renderProspect();
   const unread=state.convs.find(c=>String(c.id)===String(id))?.unread;
-  const receipt=id+':'+String(data.messages?.at(-1)?.id||'');
+  const last=data.messages?.at(-1);
+  const receipt=id+':'+String(last?.id||last?.created_at||'');
+  // Acknowledge only up to the last message shown, so a newer arrival stays unread.
+  const cursor=last?.id!=null?{message_id:last.id}:last?.created_at?{at:last.created_at}:undefined;
   if(unread>0 && state.route==='messages' && !document.hidden && !state.readReceipts.has(receipt)) {
     state.readReceipts.add(receipt);
-    try {await api('/api/conversations/'+encodeURIComponent(id)+'/seen',{method:'POST'});await loadConvs();}
+    try {await api('/api/conversations/'+encodeURIComponent(id)+'/seen',{method:'POST',body:cursor});await loadConvs();}
     catch(err){state.readReceipts.delete(receipt);if(err.status!==404)toast(err.message,'err');}
   }
 }
@@ -247,12 +250,13 @@ function renderThread() {
       '<div class="thread-head"><button class="mobile-back" id="mobile-back" aria-label="Back to conversations">&larr;</button>' + avatarHtml(c.handle, c.display_name, 36) +
       '<div class="thread-title">' + esc(c.display_name || c.handle) + '</div>' +
       stageBadge(c.stage) + '<button class="btn btn-ghost info-toggle" id="info-toggle" aria-controls="pane-info">Details</button></div>' +
-      (c.needs_human ? '<div class="flag-banner">' + icon('flag', 15) + '<span class="fb-txt">Flagged for review' + (c.needs_human_reason ? ' &mdash; ' + esc(c.needs_human_reason) : '') + '</span>' +
+      (c.needs_human ? '<div class="flag-banner">' + icon('flag', 15) + '<span class="fb-txt">Flagged for review' + (c.needs_human_reason ? ': ' + esc(c.needs_human_reason) : '') + '</span>' +
         '<button class="btn btn-ghost btn-sm" id="handled-btn">Mark handled</button></div>' : '') +
       '<div class="msgs-scroll" id="msgs-scroll"></div>' +
       '<div class="draft-zone" id="draft-zone"></div>' +
       '<div class="thread-footer"><div class="ai-response-row"><button class="ai-response-btn" id="ai-response-btn">' + icon('bot', 16) + 'AI Response</button></div>' +
       '<div class="composer-wrap">' +
+      '<p class="window-note" id="window-note" role="status" hidden></p>' +
       '<div class="composer">' +
       '<div class="composer-media"><button class="icon-btn" id="voice-btn" title="Voice notes (Instagram only)">' + icon('wave', 18) + '</button>' +
       '<button class="icon-btn" id="insert-btn" title="Quick inserts">' + icon('plus', 18) + '</button></div>' +
@@ -270,7 +274,30 @@ function renderThread() {
     const badge = pane.querySelector('.thread-head .stage-badge');
     if (badge) badge.outerHTML = stageBadge(c.stage);
   }
+  applyWindowState(c);
   renderMsgs();
+}
+/** Instagram only allows replies within 24 hours of the lead's last message.
+ *  Disable the composer once that window is closed (5 minutes early, like the
+ *  server), so nobody can try to message a lead first or too late. */
+function windowState(c) {
+  if (!c || c.channel !== 'instagram') return { open: true };
+  if (typeof c.window_open === 'boolean') return { open: c.window_open, closesAt: c.window_closes_at || null };
+  const leads = (state.thread?.messages || []).filter((m) => m.role === 'lead');
+  const last = leads.length ? leads[leads.length - 1].created_at : c.last_lead_message_at;
+  if (!last) return { open: false, never: true };
+  const closesAt = new Date(new Date(last).getTime() + 24 * 3600e3 - 5 * 60e3);
+  return { open: Date.now() < closesAt.getTime(), closesAt: closesAt.toISOString() };
+}
+function applyWindowState(c) {
+  const w = windowState(c);
+  const note = $('#window-note'), input = $('#composer-input'), send = $('#send-btn');
+  if (!note || !input || !send) return;
+  input.disabled = !w.open; send.disabled = !w.open;
+  note.hidden = w.open;
+  if (!w.open) note.textContent = w.never
+    ? 'Waiting for this person to message you first. Instagram only lets you reply after they do.'
+    : 'Instagram only allows replies within 24 hours of their last message. This window closed ' + (w.closesAt ? new Date(w.closesAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : 'earlier') + '. You can reply as soon as they message again.';
 }
 function dayLabel(iso) {
   if (!iso) return '';
@@ -348,7 +375,7 @@ function renderMsgs() {
         '<div class="msg-bubble' + (isAi ? ' ai-sent' : '') + (isMedia ? ' media' : '') + '">' + msgBubbleInner(m) + '</div>' + '</div></div>';
     }
   });
-  box.innerHTML = html || '<div class="thread-empty" style="flex:none;padding:40px 20px"><div class="icon-chip">' + icon('send', 20) + '</div>No messages yet &mdash; open the conversation with a first DM.</div>';
+  box.innerHTML = html || '<div class="thread-empty" style="flex:none;padding:40px 20px"><div class="icon-chip">' + icon('send', 20) + '</div>Waiting for this person to message you first.</div>';
   if (nearBottom) box.scrollTop = box.scrollHeight;
 }
 function renderDraftZone() {
@@ -360,7 +387,7 @@ function renderDraftZone() {
     '<div class="draft-card-head">' + icon('bot', 16) + '<span class="dc-title">AI draft</span>' +
     (d.stage_suggestion ? '<span class="tag indigo">&rarr; ' + STAGE_ONE[d.stage_suggestion] + '</span>' : '') + '</div>' +
     (d.needs_human ? '<div class="draft-reason">' + icon('alert', 13) + esc(d.reason || 'Needs your review') + '</div>' : '') +
-    d.messages.map((m, i) => '<textarea data-dmsg="' + i + '">' + esc(m) + '</textarea>').join('') +
+    d.messages.map((m, i) => '<textarea data-dmsg="' + i + '" aria-label="AI draft message ' + (i + 1) + '">' + esc(m) + '</textarea>').join('') +
     '<div class="draft-actions"><button class="btn btn-primary btn-sm" id="approve-btn">' + icon('check', 14) + 'Approve &amp; send</button>' +
     '<button class="btn btn-ghost btn-sm" id="discard-btn">Discard</button></div></div>';
   $('#approve-btn').addEventListener('click', async () => {
@@ -370,7 +397,7 @@ function renderDraftZone() {
       toast('Sent to the lead');
       await loadThread(state.activeId); loadConvs(); refreshBadge();
     } catch (e) {
-      toast(e.status === 422 ? 'Blocked by the outbound filter — flagged for review' : e.message, 'err');
+      toast(e.status === 422 ? 'Blocked by the outbound filter and flagged for review' : e.message, 'err');
       await loadThread(state.activeId);
     }
   });
@@ -407,7 +434,7 @@ function wireThread() {
       await api('/api/conversations/' + c.id + '/request-draft', { method: 'POST' });
       await loadThread(c.id); refreshBadge();
     } catch (err) {
-      toast(err.status === 409 ? 'The kill switch is on — AI drafting is paused' : err.message, 'err');
+      toast(err.status === 409 ? 'The kill switch is on, so AI drafting is paused' : err.message, 'err');
       const b2 = $('#ai-response-btn');
       if (b2) { b2.disabled = false; b2.innerHTML = icon('bot', 16) + 'AI Response'; }
     }
@@ -429,15 +456,15 @@ function wireThread() {
     } catch (e) {
       if(epoch!==state.sessionEpoch)return;
       if(e.status!==422) restoreFailedMessage(c.id,text);
-      toast(e.status === 422 ? 'Blocked by the outbound filter — flagged for review' : e.message, 'err');
-      if (e.status === 422) loadThread(c.id);
+      toast(e.status === 422 ? 'Blocked by the outbound filter and flagged for review' : e.message, 'err');
+      if (e.status === 422 || e.status === 409) loadThread(c.id); // 409: parked (24h window, limits, reconnect), show the flag
     }
   }
   $('#send-btn').addEventListener('click', sendComposer);
   $('#composer-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendComposer(); } });
   $('#slots-btn').addEventListener('click', () => {
     const slots = ((state.settings && state.settings.settings && state.settings.settings.call_slots) || '').trim();
-    if (!slots) return toast('No call slots configured — add them on the Prompt page', 'err');
+    if (!slots) return toast('No call slots configured. Add them on the Prompt page', 'err');
     const inp = $('#composer-input');
     inp.value = (inp.value + ' ' + slots).trim();
     inp.focus();
@@ -454,7 +481,7 @@ function wireThread() {
       { l: 'Call slots', v: (s.call_slots || '').trim() },
     ];
     holder.innerHTML = '<div class="insert-pop">' + items.map((it, i) =>
-      '<button data-ins="' + i + '"' + (it.v ? '' : ' disabled') + '>' + it.l + (it.v ? '' : ' — not set') + '</button>'
+      '<button data-ins="' + i + '"' + (it.v ? '' : ' disabled') + '>' + it.l + (it.v ? '' : ' (not set)') + '</button>'
     ).join('') + '</div>';
     holder.querySelectorAll('[data-ins]').forEach((b) => b.addEventListener('click', () => {
       const inp = $('#composer-input');
@@ -485,12 +512,12 @@ function renderProspect() {
     (c.call_time ? '<div class="follow-lines" style="margin-top:6px;display:flex;align-items:center;justify-content:center;gap:5px">' + icon('calendar', 13) + '<span>Call: ' + esc(callTimeFmt(c.call_time)) + '</span></div>' : '') +
     '</div>' +
 
-    '<div class="autopilot-row"><span class="ar-label">Autopilot</span>' + switchHtml(auto, '', 'id="auto-switch"') + '</div>' +
+    '<div class="autopilot-row"><span class="ar-label">Autopilot</span>' + switchHtml(auto, '', 'id="auto-switch"', 'Autopilot') + '</div>' +
     '<div class="info-divider"></div>' +
 
     '<div class="info-section-title">Prospect Info</div>' +
     '<div class="info-card">' +
-    '<div class="info-hint" style="margin:0 0 6px">First name — used for {{FIRST_NAME}} in outgoing messages</div>' +
+    '<div class="info-hint" style="margin:0 0 6px">First name, used for {{FIRST_NAME}} in outgoing messages</div>' +
     '<div class="name-row"><input id="fname-input" placeholder="First name" value="' + esc(c.display_name || '') + '"></div>' +
     '<div class="draft-actions" style="margin-top:8px"><button class="btn btn-primary btn-sm" id="fname-save">Save</button></div></div>' +
 
@@ -500,13 +527,13 @@ function renderProspect() {
 
     '<div class="info-card"><div class="ic-title">AI mode</div>' +
     '<select id="mode-sel">' +
-    ['copilot|Copilot — AI drafts, you approve', 'autopilot|Autopilot — AI sends automatically', 'off|Off — full manual takeover'].map((o) => {
+    ['copilot|Copilot: AI drafts, you approve', 'autopilot|Autopilot: AI sends automatically', 'off|Off: full manual takeover'].map((o) => {
       const p = o.split('|');
       return '<option value="' + p[0] + '"' + (c.mode === p[0] ? ' selected' : '') + '>' + p[1] + '</option>';
     }).join('') + '</select>' +
     (c.stage === 'dead' ? '<button class="btn btn-ghost btn-sm" id="revive-btn" style="width:100%;margin-top:10px">' + icon('refresh', 14) + 'Revive conversation</button>' : '') +
     (c.stage === 'call_booked' ? '<label class="fp-row"><input type="checkbox" id="fp-check"' + (c.false_positive ? ' checked' : '') + '>Mark as false positive</label>' : '') +
-    '<div class="info-hint">Call Booked and Sale are yours to confirm — the AI can only suggest them.</div></div>' +
+    '<div class="info-hint">Call Booked and Sale are yours to confirm. The AI can only suggest them.</div></div>' +
 
     '<div class="info-card"><div class="ic-title">Follow-ups</div>' +
     '<div class="info-row"><span class="ir-label">' + c.followup_count + ' sent</span>' +

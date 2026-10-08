@@ -55,3 +55,14 @@ Shipped on `beta/backend`:
 - **Tests** (F.6): `test/pure.test.mjs` on the pure functions plus the isolation suite (27 checks). Found and fixed a real bug: Haiku usage was priced at Sonnet rates because the dated model id did not match the price table.
 - **Meta prep** (G.2): signed data-deletion callback, status page with confirmation code, `docs/META_REVIEW.md` checklist, `docs/RESTORE.md` runbook, `GET /health`.
 Left for JD: business verification and the screencast (G.1, G.3) need him; the Stripe epic stays out by his decision.
+
+## Release gates (branch w-backend-gates)
+Closed the backend items under "Still needed from Claude before release" in CONTRACT_REQUESTS.md:
+- Go-live gates in `lib/golive.js` (pure) and enforced in server.js for go-live and for kill switch off via settings. Test-drive passes bind to the prompt version the run started on; template apply now records a version; failed or crashed runs clear a pass on the same version; partial runs never count. Forged test-drive keys are stripped. The first account no longer skips the test drive. A live account whose script changes stays live and is marked stale.
+- Pending accounts: approval before any test drive or AI (kept, documented).
+- Seen cursor (`message_id` or `at`), thread messages carry ids, frontend sends the cursor.
+- SSE: per-session streams, closed on logout, logout everywhere, team removal, account deletion, plus a periodic recheck; 20 per account.
+- Legacy PIN off by default (ALLOW_LEGACY_PIN=1 to opt in); production boots without ADMIN_PIN when the PIN is off.
+- Magic links: printed only in development without a mail provider; production returns a clean 503/502. OPEN_LOGIN_EMAILS hardened (exact match, production opt-in, audited, rate limited).
+- Analytics timezone, in-memory rate limits (`lib/ratelimit.js`).
+Tests: the isolation suite now runs against a local mock of the AI provider (ANTHROPIC_BASE_URL), so test drives and the go-live path are exercised end to end with no real provider, and boots extra servers for the PIN opt-in and production behaviour.
