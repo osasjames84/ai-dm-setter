@@ -1091,8 +1091,8 @@ html[data-theme="light"] #view-messages {
 :where(#view-messages) .name-row { display: flex; gap: 7px; }
 :where(#view-messages) .name-row input { flex: 1; }
 
-/* Keep AI authorship visible, including image/video bubbles. */
-:where(#view-messages) .msg-bubble.ai-sent { outline: 1px solid #fbbf24; outline-offset: 1px; }
+/* One gold ring on AI bubbles (border + glow); image/video bubbles have no border, so they get the outline instead. */
+:where(#view-messages) .msg-bubble.media.ai-sent { outline: 1px solid #fbbf24; outline-offset: 1px; }
 /* undo the restyle's additions the original never had */
 :where(#view-messages) .searchbox svg { transform: none; }
 :where(#view-messages) .conv-row + .conv-row { margin-top: 0; }
