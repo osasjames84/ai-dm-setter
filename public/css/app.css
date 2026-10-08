@@ -1242,3 +1242,16 @@ html[data-theme="light"] .check-warn { color:#805000; }
 .settings-card > input {max-width:100%;}
 
 .data-table {min-width:460px;}
+
+/* Settings sections: admin pages live here as tabs instead of sidebar items. */
+.settings-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 22px; padding: 0 0 16px; border-bottom: 1px solid var(--border2); }
+.settings-tabs .chip { padding: 7px 14px; }
+.settings-pane > h1 { font-size: 24px; font-weight: 800; letter-spacing: -.03em; margin-bottom: 6px; }
+.settings-pane > h1 + p { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+.settings-pane .card + .card { margin-top: 12px; }
+.settings-pane .operator-account .btn, .settings-pane .team-row .btn { margin: 8px 8px 0 0; }
+.settings-pane h2 { font-size: 17px; font-weight: 700; margin: 28px 0 6px; }
+.settings-pane h2 + .set-help, .settings-pane h2 + p { margin-bottom: 8px; }
+.settings-pane .metric-grid { margin: 18px 0 8px; }
+.settings-pane label { display: block; font-size: 13px; color: var(--muted); margin: 4px 0 6px; }
+.settings-pane select, .settings-pane input[type="email"], .settings-pane textarea { max-width: 420px; }

@@ -324,6 +324,11 @@ const allSettingsRaw = () => {
 // failed for days, flagging each thread "send failed" and dropping it to
 // copilot. The token is fixed; clear those flags and put the threads back on
 // autopilot so the owner doesn't click through them one by one.
+if (getSetting('_seen_baseline_v1') == null) {
+  const n = db.prepare("UPDATE conversations SET last_seen_at = ? WHERE account_id = ? AND last_seen_at IS NULL").run(new Date().toISOString(), FIRST_ACCOUNT_ID).changes;
+  setSetting('_seen_baseline_v1', '1');
+  console.log(`[migrate] unread baseline: ${n} existing conversation(s) marked seen`);
+}
 if (getSetting('_clear_sendfailed_flags_v1') == null) {
   const r = db.prepare("UPDATE conversations SET needs_human = 0, needs_human_reason = NULL, mode = 'autopilot' WHERE needs_human = 1 AND needs_human_reason LIKE 'send failed%'").run();
   setSetting('_clear_sendfailed_flags_v1', '1');
@@ -480,7 +485,7 @@ if (STARTER_PROMPT && STARTER_PROMPT.sections && getSetting('_seed_prompt_v1') =
 // ---------- accounts ----------
 /** Names of the boot one-shot flags above: a NEW account gets them pre-set so the
  *  legacy fixes (which only made sense for JD's July data) never run on it. */
-const ONE_SHOT_FLAGS = ['_seed_prompt_v1', '_clear_sendfailed_flags_v1', '_price_range_200_300_v1', '_min_age_16_v1', '_regional_pricing_v1', '_regional_pricing_v2', '_regional_pricing_v3', '_strip_old_ladder_v1', '_strip_old_ladder_v2', '_price_handler_no_money_v1'];
+const ONE_SHOT_FLAGS = ['_seed_prompt_v1', '_seen_baseline_v1', '_clear_sendfailed_flags_v1', '_price_range_200_300_v1', '_min_age_16_v1', '_regional_pricing_v1', '_regional_pricing_v2', '_regional_pricing_v3', '_strip_old_ladder_v1', '_strip_old_ladder_v2', '_price_handler_no_money_v1'];
 /** Create an account (pending JD's approval) with an owner user, seeded with defaults + the starter script. */
 function createAccount({ name, ownerEmail }) {
   const id = 'acc_' + crypto.randomBytes(6).toString('hex');

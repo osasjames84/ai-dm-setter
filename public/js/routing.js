@@ -1,24 +1,40 @@
 'use strict';
 /* ============================== nav / routing ============================== */
 const NAV = [
-  { id: 'onboarding', label: 'Setup', icon: 'check' },
+  { id: 'onboarding', label: 'Setup', icon: 'check', setupOnly: true },
   { id: 'dashboard', label: 'Dashboard', icon: 'grid' },
   { id: 'messages', label: 'Messages', icon: 'chat' },
   { id: 'drafts', label: 'Drafts', icon: 'inbox', badge: true },
   { id: 'prompt', label: 'Prompt', icon: 'filetext' },
   { id: 'content', label: 'Content', icon: 'bulb', pill: 'NEW' },
-  { id: 'versions', label: 'Versions', icon: 'filetext' },
-  { id: 'analytics', label: 'Analytics', icon: 'grid' },
-  { id: 'team', label: 'Team', icon: 'chat' },
-  { id: 'operator', label: 'Accounts', icon: 'grid' },
   { id: 'settings', label: 'Settings', icon: 'gear' },
 ];
+// Everything administrative lives under Settings as tabs, not in the sidebar.
+const SETTINGS_TABS = [
+  { id: 'settings', label: 'General' },
+  { id: 'analytics', label: 'Analytics' },
+  { id: 'versions', label: 'Script versions' },
+  { id: 'team', label: 'Team' },
+  { id: 'operator', label: 'Accounts', adminOnly: true },
+  { id: 'onboarding', label: 'Setup', jump: true },
+];
+const isSettingsRoute = (r) => SETTINGS_TABS.some((t) => t.id === r && !t.jump);
+function renderSettingsTabs() {
+  const host = $('#settings-tabs');
+  if (!host) return;
+  const admin = !!state.me?.user?.is_platform_admin;
+  host.innerHTML = SETTINGS_TABS.filter((t) => !t.adminOnly || admin).map((t) =>
+    '<button class="chip' + (state.route === t.id ? ' on' : '') + '" data-tab="' + t.id + '">' + esc(t.label) + '</button>').join('');
+  host.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => go(b.dataset.tab)));
+  SETTINGS_TABS.filter((t) => !t.jump).forEach((t) => { const pane = $('#' + (t.id === 'settings' ? 'settings' : t.id) + '-page'); if (pane) pane.classList.toggle('hidden', t.id !== state.route); });
+}
 function renderNav() {
-  $('#nav').innerHTML = NAV.filter(n=>n.id!=='operator' || state.me?.user?.is_platform_admin).map((n) => {
+  $('#nav').innerHTML = NAV.filter((n) => !n.setupOnly || !state.me?.onboarding_complete).map((n) => {
     const badge = n.badge && state.drafts.length ? '<span class="nav-badge">' + state.drafts.length + '</span>' : '';
     const pill = n.pill ? '<span class="nav-pill">' + n.pill + '</span>' : '';
     const dot = n.id === 'settings' && state.igStatus && state.igStatus.auth_error ? '<span class="nav-dot" title="Instagram disconnected"></span>' : '';
-    return '<button class="nav-item' + (state.route === n.id ? ' active' : '') + '" aria-label="' + esc(n.label) + '" title="' + esc(n.label) + '" data-route="' + n.id + '">' +
+    const active = state.route === n.id || (n.id === 'settings' && isSettingsRoute(state.route));
+    return '<button class="nav-item' + (active ? ' active' : '') + '" aria-label="' + esc(n.label) + '" title="' + esc(n.label) + '" data-route="' + n.id + '">' +
       icon(n.icon, 18) + dot + '<span class="nav-label">' + n.label + '</span>' + pill + badge + '</button>';
   }).join('');
   $('#nav').querySelectorAll('[data-route]').forEach((b) => b.addEventListener('click', () => go(b.dataset.route)));
@@ -36,11 +52,13 @@ function go(route) {
     state.scriptDirty = false; state.settingsDirty = false;
   }
   state.route = route;
-  ['onboarding', 'dashboard', 'messages', 'drafts', 'prompt', 'content', 'settings', 'team', 'operator', 'versions', 'analytics'].forEach((r) => {
-    $('#view-' + r).classList.toggle('hidden', r !== route);
+  const viewId = isSettingsRoute(route) ? 'settings' : route;
+  ['onboarding', 'dashboard', 'messages', 'drafts', 'prompt', 'content', 'settings'].forEach((r) => {
+    $('#view-' + r).classList.toggle('hidden', r !== viewId);
   });
+  if (isSettingsRoute(route)) renderSettingsTabs();
   // one-shot fadeUp on the view that just became visible (re-add to retrigger)
-  const view = $('#view-' + route);
+  const view = $('#view-' + viewId);
   if (view) { view.classList.remove('view-enter'); void view.offsetWidth; view.classList.add('view-enter'); }
   renderNav();
   if (route === 'onboarding') renderOnboarding();
