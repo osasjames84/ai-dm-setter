@@ -1113,6 +1113,9 @@ html[data-theme="light"] #view-messages {
 :where(#view-messages) .info-section-title { color: var(--text); letter-spacing: normal; text-transform: none; }
 :where(#view-messages) .info-card { font-size: inherit; }
 :where(#view-messages) .unread-count { background: var(--indigo); color: #fff; }
+/* channel tag on Messenger conversations (Instagram is the default and carries none) */
+:where(#view-messages) .channel-tag { margin-left: 6px; font-size: 10px; line-height: 15px; font-weight: 500; color: #9cc3ff; background: rgba(0,132,255,.14); border-radius: 9999px; padding: 0 6px; white-space: nowrap; }
+html[data-theme="light"] :where(#view-messages) .channel-tag { color: #0a66d6; background: rgba(0,132,255,.1); }
 /* original light-theme chat overrides */
 html[data-theme="light"] :where(#view-messages) .pane-list { background: #ffffff; }
 html[data-theme="light"] :where(#view-messages) .avatar, html[data-theme="light"] :where(#view-messages) .msg-av { background: #e6e8f0; color: #4b5066; }

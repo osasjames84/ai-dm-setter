@@ -22,6 +22,52 @@ function bindInstagram(host,refresh) {
     catch(err){host.querySelector('#ig-action-status').textContent=setupError(err);e.target.disabled=false;}
   });
 }
+/** Facebook Messenger: connect a Page with its Page ID + Page access token. */
+function messengerCard(st) {
+  const fb=st || state.me?.messenger || {};
+  const owner=state.me?.user?.role==='owner';
+  const connected=!!fb.connected && !fb.needs_reconnect;
+  const hook=location.origin+'/webhook/messenger';
+  const status=fb.needs_reconnect?'Messenger needs reconnecting: Facebook rejected the Page token. Paste a fresh one below.'
+    :connected?'Connected to '+(fb.page_name?fb.page_name:'Page '+(fb.page_id||''))+(fb.via==='env'?' (server settings)':'')+'.'
+    :'Connect your Facebook Page to answer Messenger conversations here too.';
+  const form=owner && !connected
+    ?'<form id="fb-form" class="fb-form"><label for="fb-page-id">Facebook Page ID</label><input id="fb-page-id" inputmode="numeric" autocomplete="off" placeholder="e.g. 102345678901234" required>'+
+      '<label for="fb-token">Page access token</label><input id="fb-token" type="password" autocomplete="off" placeholder="EAA…" required>'+
+      '<p class="set-help">In your Meta app: add the Messenger product, generate a Page access token for your Page, and set the webhook callback URL to <code>'+esc(hook)+'</code> with the same verify token as Instagram, subscribed to <b>messages</b> and <b>message_echoes</b>. The app needs the <b>pages_messaging</b> permission.</p>'+
+      '<button class="btn btn-primary" type="submit">'+(fb.needs_reconnect?'Reconnect Messenger':'Connect Messenger')+'</button></form>'
+    :(!owner && !connected?'<p>Ask your account owner to connect Messenger.</p>':'');
+  return '<div class="set-sub"><h2>Messenger</h2><p>'+esc(status)+'</p>'+form+
+    (connected?'<button class="btn btn-ghost" id="fb-test">Refresh connection</button>':'')+
+    (connected && owner && fb.via!=='env'?'<button class="btn btn-ghost" id="fb-disconnect">Disconnect</button>':'')+
+    '<p role="status" id="fb-action-status"></p></div>';
+}
+function bindMessenger(host,refresh) {
+  const out=()=>host.querySelector('#fb-action-status');
+  host.querySelector('#fb-form')?.addEventListener('submit',async e=>{
+    e.preventDefault();
+    const form=e.currentTarget, btn=form.querySelector('button');
+    btn.disabled=true; out().textContent='Checking the Page with Facebook…';
+    try{
+      const r=await api('/api/messenger/connect',{method:'POST',body:{page_id:form.querySelector('#fb-page-id').value.trim(),token:form.querySelector('#fb-token').value.trim()}});
+      await loadIdentity(); await refresh();
+      const msg=host.isConnected?out():null;
+      if(msg)msg.textContent='Connected to '+(r.page?.name||'your Page')+'.'+(r.webhook_subscribed?'':' Facebook did not confirm the webhook subscription; check the Messenger webhook settings in your Meta app.');
+    }catch(err){if(host.isConnected){out().textContent=setupError(err);btn.disabled=false;}}
+  });
+  host.querySelector('#fb-test')?.addEventListener('click',async e=>{
+    const button=e.currentTarget;button.disabled=true;
+    try{const st=await api('/api/messenger/status');await loadIdentity();await refresh();if(host.isConnected && st.error)out().textContent='Facebook answered: '+st.error;}
+    catch(err){if(host.isConnected)out().textContent=setupError(err);}
+    finally{button.disabled=false;}
+  });
+  host.querySelector('#fb-disconnect')?.addEventListener('click',async e=>{
+    if(!confirm('Disconnect Messenger? Messenger conversations stop updating until you reconnect.'))return;
+    e.target.disabled=true;
+    try{await api('/api/messenger/disconnect',{method:'POST'});await loadIdentity();await refresh();}
+    catch(err){out().textContent=setupError(err);e.target.disabled=false;}
+  });
+}
 function renderNextStep(body) {
   const s=state.settings.settings;
   body.innerHTML='<h2>Choose the next step</h2><form id="goal-form"><label for="goal-type">What should a qualified customer do?</label><select id="goal-type"><option value="call">Book a call</option><option value="checkout">Visit your checkout</option><option value="form">Complete a form</option><option value="human">Talk to a person</option></select><label for="goal-link">Destination link</label><input id="goal-link" type="url" placeholder="https://…"><p class="set-help">Use your own booking, checkout or form link. Human handoffs use your script instructions.</p><button class="btn btn-primary">Save next step</button><p role="status" id="goal-status"></p></form>';

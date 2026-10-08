@@ -1,6 +1,6 @@
 'use strict';
 const SETUP_STEPS = [
-  ['instagram','Connect Instagram'], ['template','Choose a template'],
+  ['instagram','Connect Instagram or Messenger'], ['template','Choose a template'],
   ['sections','Write your script'], ['next_step','Choose the next step'], ['test_drive','Test your script'],
 ];
 const SETUP_FIELDS = [
@@ -122,8 +122,9 @@ function drawSetup() {
   }));
   const body=$('#setup-step-body');
   if(step===0) {
-    body.innerHTML=instagramCard(state.me?.instagram)+'<button class="btn btn-primary" id="setup-next">Choose a template</button>';
+    body.innerHTML=instagramCard(state.me?.instagram)+messengerCard(state.me?.messenger)+'<button class="btn btn-primary" id="setup-next">Choose a template</button>';
     bindInstagram(body,async()=>{await loadIdentity();await renderOnboarding();});
+    bindMessenger(body,async()=>{await loadIdentity();await renderOnboarding();});
     $('#setup-next').addEventListener('click',()=>{state.onboardingStep=1;drawSetup();});
   } else if(step===1) {
     body.innerHTML='<h2>Choose a starting point</h2><p>Templates only fill empty sections. Anything you have written stays in place.</p><div id="setup-templates" class="template-picker"></div><button class="btn btn-ghost" id="setup-write">Write your script</button>';

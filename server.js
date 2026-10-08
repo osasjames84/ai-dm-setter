@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { PERSONAS, PERSONA_BY_ID } from './lib/personas.js';
 import { igConfigured, igVerifyWebhook, igParseInbound, igSendText, igSendAudio, igSendAction, igProfile, igStatus, igFetchHistory, onIgAuthError, setCredsResolver, igOauthConfigured, igAuthUrl, igCompleteOauth, igRefreshToken, igSubscribeApp, IG_SCOPES, IgSendError, igWindowOpen, setOutboundContextResolver, setSendPolicyResolver, onIgSendIssue } from './lib/instagram.js';
+import { fbConfigured, fbSendText, fbSendAudio, fbSendAction, fbParseInbound, fbVerifyWebhook, fbPageInfo, fbSubscribePage, fbStatus, fbProfile, setFbCredsResolver, setFbOutboundContextResolver, onFbAuthError, onFbSendIssue } from './lib/messenger.js';
 import { initCrypto, encrypt, decrypt } from './lib/crypto.js';
 import { generateMove, varyMessage, applyOutboundFilter, stripDashes, buildSystemPrompt, anthropicClient, PROMPT_SECTIONS } from './lib/engine.js';
 import { openStream, bump as bumpEvent, initEvents, closeStreams } from './lib/events.js';
@@ -532,6 +533,8 @@ initEvents({
   }
   // The env-token Instagram account belongs to acc_1 until OAuth replaces it.
   if (process.env.IG_BUSINESS_ID) db.prepare('INSERT OR IGNORE INTO instagram_accounts (account_id, business_id, status, updated_at) VALUES (?, ?, ?, ?)').run(FIRST_ACCOUNT_ID, String(process.env.IG_BUSINESS_ID), 'connected', new Date().toISOString());
+  // Same for an env-token Facebook Page (Messenger) until one is connected in Settings.
+  if (process.env.FB_PAGE_ID) db.prepare('INSERT OR IGNORE INTO messenger_pages (account_id, page_id, status, updated_at) VALUES (?, ?, ?, ?)').run(FIRST_ACCOUNT_ID, String(process.env.FB_PAGE_ID), 'connected', new Date().toISOString());
 }
 // The OWNER_EMAIL user is the platform admin (JD): approves and pauses accounts.
 {
@@ -596,6 +599,42 @@ setSendPolicyResolver(() => {
 function igPausedReason(accountId) {
   return igRowFor(accountId)?.status === 'needs_reconnect' ? 'instagram needs reconnect' : null;
 }
+
+// ---------- Messenger (Facebook Page) credentials, same shape as Instagram ----------
+const fbRowFor = (accountId) => db.prepare('SELECT * FROM messenger_pages WHERE account_id = ?').get(accountId) || null;
+const accountForPageId = (pageId) => db.prepare('SELECT account_id FROM messenger_pages WHERE page_id = ?').get(String(pageId || ''))?.account_id || null;
+setFbCredsResolver(() => {
+  const a = currentAccountOrFirst('messenger');
+  const row = fbRowFor(a);
+  if (row && row.token_enc && row.status !== 'disconnected') {
+    const token = decrypt(row.token_enc);
+    if (token) return { token, businessId: String(row.page_id) };
+  }
+  if (a === FIRST_ACCOUNT_ID && process.env.FB_PAGE_TOKEN && process.env.FB_PAGE_ID && (!row || row.status !== 'disconnected')) {
+    return { token: process.env.FB_PAGE_TOKEN, businessId: String(process.env.FB_PAGE_ID) };
+  }
+  return null;
+});
+setFbOutboundContextResolver((recipientId) => {
+  const a = currentAccountOrFirst('fb-gate');
+  const row = db.prepare("SELECT last_lead_message_at FROM conversations WHERE channel = 'messenger' AND external_id = ? AND account_id = ?").get(String(recipientId), a);
+  return { lastInboundAt: row?.last_lead_message_at || null, paused: fbPausedReason(a) };
+});
+function fbPausedReason(accountId) {
+  return fbRowFor(accountId)?.status === 'needs_reconnect' ? 'messenger needs reconnect' : null;
+}
+
+/**
+ * The Meta messaging channels a conversation can live on. Everything that sends
+ * goes through these so Instagram and Messenger share one path (idempotent
+ * sends, typing indicator, voice notes, 24h window, pause on reconnect).
+ */
+const META_CHANNELS = {
+  instagram: { label: 'Instagram', configured: () => igConfigured(), sendText: igSendText, sendAudio: igSendAudio, sendAction: igSendAction, paused: (a) => igPausedReason(a) },
+  messenger: { label: 'Messenger', configured: () => fbConfigured(), sendText: fbSendText, sendAudio: fbSendAudio, sendAction: fbSendAction, paused: (a) => fbPausedReason(a) },
+};
+const metaChannel = (conv) => (conv && Object.prototype.hasOwnProperty.call(META_CHANNELS, conv.channel) ? META_CHANNELS[conv.channel] : null);
+const notConnectedReason = (ch) => ch.label.toLowerCase() + ' not connected';
 
 // ---------- prompt versions (E.8) ----------
 // Every save that changes a prompt section becomes a numbered version; AI
@@ -1041,7 +1080,8 @@ function confirmUnknownSend(convId, text, mid) {
 const normForMatch = (x) => String(x || '').toLowerCase().replace(/['’‘`]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
 
 async function maybeFireVoiceNote(conv, text) {
-  if (conv.channel !== 'instagram' || !igConfigured() || !conv.external_id || !PUBLIC_BASE) return;
+  const ch = metaChannel(conv);
+  if (!ch || !ch.configured() || !conv.external_id || !PUBLIC_BASE) return;
   const arsenal = parseJ(getSetting('audio_arsenal'), []);
   if (!Array.isArray(arsenal) || !arsenal.length) return;
   const t = normForMatch(text);
@@ -1054,7 +1094,7 @@ async function maybeFireVoiceNote(conv, text) {
     try {
       // First-time-only per lead per clip, so the clip id is the whole idempotency key.
       const out = await igSendOnce(conv, 'arsenal:' + conv.id + ':' + audioId, 'audio', null,
-        () => igSendAudio(conv.external_id, PUBLIC_BASE + '/api/attachments/' + audioId, { source: 'ai' }));
+        () => ch.sendAudio(conv.external_id, PUBLIC_BASE + '/api/attachments/' + audioId, { source: 'ai' }));
       if (out.ok && !out.deduped) addMessage(conv.id, 'setter', '[voice note]', 'ai', out.mid, 'audio', audioId);
     } catch (e) { console.error('[voice-note] send failed:', e.message); }
     return; // at most one clip per turn
@@ -1109,7 +1149,7 @@ async function deliver(conv, text, source, opts = {}) {
   }
   // GUARD 3 — block test-marker text from a real IG thread (sim is exempt). Refuse
   // (ok:false) so the caller flags/parks it instead of shipping the marker.
-  if (conv.channel === 'instagram' && TEST_MARKER_RE.test(filtered.text)) {
+  if (metaChannel(conv) && TEST_MARKER_RE.test(filtered.text)) {
     console.log('[guard] test-marker text blocked from real thread');
     return { ok: false, reason: 'test text blocked' };
   }
@@ -1128,25 +1168,26 @@ async function deliver(conv, text, source, opts = {}) {
   }
   // E.12: tag the booking link with the conversation id so a Calendly booking matches exactly.
   filtered.text = tagBookingLink(filtered.text, conv.id);
-  if (conv.channel === 'instagram') {
-    // An Instagram thread with no working connection: nothing is sent and
-    // nothing is stored as if it had been.
-    if (!igConfigured() || !conv.external_id) return { ok: false, parked: true, reason: 'instagram not connected' };
+  const ch = metaChannel(conv);
+  if (ch) {
+    // An Instagram or Messenger thread with no working connection: nothing is
+    // sent and nothing is stored as if it had been.
+    if (!ch.configured() || !conv.external_id) return { ok: false, parked: true, reason: notConnectedReason(ch) };
     // Instagram typing indicator: for AI/autopilot sends, mark the thread read,
     // show typing, then pause a length-scaled beat so the bubble is visible.
     // Skipped outside the window (the gate would refuse the real send anyway).
     const leadAt = getConv(conv.id)?.last_lead_message_at || conv.last_lead_message_at;
     if (source !== 'human' && getSetting('typing_indicator') === '1' && igWindowOpen(leadAt)) {
       try {
-        await igSendAction(conv.external_id, 'mark_seen');
-        await igSendAction(conv.external_id, 'typing_on');
+        await ch.sendAction(conv.external_id, 'mark_seen');
+        await ch.sendAction(conv.external_id, 'typing_on');
         await new Promise((r) => setTimeout(r, Math.min(1000 + filtered.text.length * 45, 8000)));
       } catch { /* presence is best-effort — never block the real message */ }
     }
     if (source !== 'human') inFlightSends.set(String(conv.external_id), Date.now() + 20_000);
     const key = opts.idempotencyKey || (source === 'human' ? 'human:' + newId() : sendKey(conv, source, filtered.text));
     const out = await igSendOnce(conv, key, 'text', sha(normForDedupe(filtered.text)),
-      () => igSendText(conv.external_id, filtered.text, { source }));
+      () => ch.sendText(conv.external_id, filtered.text, { source }));
     if (!out.ok) { inFlightSends.delete(String(conv.external_id)); return out; }
     if (out.deduped) { console.log(`[idempotency] send already done for conv ${conv.id}, skipped`); return { ok: true, deduped: true }; }
     sentMid = out.mid;
@@ -1172,17 +1213,18 @@ async function deliverVoiceNote(conv, audioId, source, caption = '[voice note]')
   if (!audioId || !attachmentPath(audioId)) return { ok: false, reason: 'clip missing' };
   // GUARD 3 (belt-and-suspenders) — if a caption is ever passed for a real IG
   // thread, hold it to the same test-marker refusal as deliver().
-  if (conv.channel === 'instagram' && TEST_MARKER_RE.test(String(caption || ''))) {
+  if (metaChannel(conv) && TEST_MARKER_RE.test(String(caption || ''))) {
     console.log('[guard] test-marker text blocked from real thread');
     return { ok: false, reason: 'test text blocked' };
   }
   let sentMid = null;
-  if (conv.channel === 'instagram') {
-    if (!igConfigured() || !conv.external_id) return { ok: false, parked: true, reason: 'instagram not connected' };
-    if (!PUBLIC_BASE) return { ok: false, reason: 'PUBLIC_BASE_URL is not set, Instagram cannot fetch the clip' };
+  const ch = metaChannel(conv);
+  if (ch) {
+    if (!ch.configured() || !conv.external_id) return { ok: false, parked: true, reason: notConnectedReason(ch) };
+    if (!PUBLIC_BASE) return { ok: false, reason: `PUBLIC_BASE_URL is not set, ${ch.label} cannot fetch the clip` };
     try {
       const out = await igSendOnce(conv, 'voice:' + sendKey(conv, source, 'audio:' + audioId), 'audio', null,
-        () => igSendAudio(conv.external_id, PUBLIC_BASE + '/api/attachments/' + audioId, { source }));
+        () => ch.sendAudio(conv.external_id, PUBLIC_BASE + '/api/attachments/' + audioId, { source }));
       if (!out.ok) return out;
       if (out.deduped) return { ok: true, deduped: true };
       sentMid = out.mid;
@@ -1412,7 +1454,7 @@ const scheduler = createScheduler({
   leadSpokeSince,
   humanConfirmStages: HUMAN_CONFIRM_STAGES,
   // Instagram sends paused for this conversation's account (needs reconnect)? → reason or null.
-  automationPaused: (conv) => (conv && conv.channel === 'instagram' ? igPausedReason(conv.account_id || currentAccountOrFirst('paused')) : null),
+  automationPaused: (conv) => (metaChannel(conv) ? metaChannel(conv).paused(conv.account_id || currentAccountOrFirst('paused')) : null),
   // FEATURE 1/3: parked 24h-window drafts notify the owner. Best-effort, fire-and-forget.
   notify: (subject, text) => { notify(subject, text).catch(() => {}); },
 });
@@ -1435,20 +1477,34 @@ onIgAuthError((detail) => {
   }
 });
 
+// Messenger: a rejected Page token pauses Messenger sends (needs_reconnect) and
+// tells the owner once; a healthy status check clears it.
+onFbAuthError((detail) => {
+  const a = currentAccountOrFirst('fb-auth');
+  if (detail) {
+    const changed = db.prepare("UPDATE messenger_pages SET status = 'needs_reconnect', last_error = ?, updated_at = ? WHERE account_id = ? AND status = 'connected'").run(String(detail).slice(0, 200), nowIso(), a).changes;
+    if (changed) notify('Messenger token error', `Facebook rejected a request for your Page (token may be expired or revoked): ${String(detail).slice(0, 200)}`).catch(() => {});
+  } else {
+    db.prepare("UPDATE messenger_pages SET status = 'connected', last_error = NULL, updated_at = ? WHERE account_id = ? AND status = 'needs_reconnect'").run(nowIso(), a);
+  }
+});
+
 // Rate-limit back-off and policy restrictions from Meta: tell the owner, at most
 // once an hour per account and kind, so a burst of refused sends stays quiet.
 const sendIssueNotifiedAt = new Map();
-onIgSendIssue((kind, detail) => {
-  const a = currentAccountOrFirst('ig-issue');
-  const k = a + ':' + kind;
+const onMetaSendIssue = (channel) => (kind, detail) => {
+  const a = currentAccountOrFirst(channel === 'Instagram' ? 'ig-issue' : 'fb-issue');
+  const k = a + ':' + channel + ':' + kind;
   if (Date.now() - (sendIssueNotifiedAt.get(k) || 0) < 3600_000) return;
   sendIssueNotifiedAt.set(k, Date.now());
-  const subject = kind === 'policy_block' ? 'Instagram restricted sending' : 'Instagram rate limit reached';
+  const subject = kind === 'policy_block' ? `${channel} restricted sending` : `${channel} rate limit reached`;
   const text = kind === 'policy_block'
-    ? 'Instagram refused a message for a policy reason. Automated sending is paused for 6 hours. Check the account in the Instagram app before turning anything back on. Detail: '
-    : 'Instagram asked us to slow down. Sending is backing off automatically and refused messages are waiting in Needs Review. Detail: ';
+    ? `${channel} refused a message for a policy reason. Automated sending is paused for 6 hours. Check the account in the ${channel} app before turning anything back on. Detail: `
+    : `${channel} asked us to slow down. Sending is backing off automatically and refused messages are waiting in Needs Review. Detail: `;
   notify(subject, text + String(detail).slice(0, 200)).catch(() => {});
-});
+};
+onIgSendIssue(onMetaSendIssue('Instagram'));
+onFbSendIssue(onMetaSendIssue('Messenger'));
 
 // Boot: any send still 'sending' was cut off by a restart or crash mid-send.
 // Meta may or may not have delivered it, so it is marked 'unknown' and its
@@ -1584,6 +1640,7 @@ app.get('/api/me', requireAccount, (req, res) => {
     user: { id: req.user.id, email: req.user.email, role: req.user.role, is_platform_admin: !!req.user.is_platform_admin },
     account: { id: req.account.id, name: req.account.name, access_status: req.account.access_status },
     instagram: instagramShape(req.accountId),
+    messenger: messengerShape(req.accountId),
     onboarding_complete: getSetting('kill_switch') === '0' && !!String(getSetting('prompt_qualification') || '').trim(),
   });
 });
@@ -1722,7 +1779,8 @@ function exportAccount(accountId) {
   const usage = db.prepare('SELECT day, model, calls, input_tokens, output_tokens FROM ai_usage WHERE account_id = ? ORDER BY day').all(accountId);
   let knowledge = [];
   try { knowledge = fs.readdirSync(knowledgeDir(accountId)); } catch { /* none */ }
-  return { exported_at: nowIso(), account: acc, users, settings, instagram: ig ? { username: ig.username, business_id: ig.business_id, status: ig.status } : null, conversations, drafts, knowledge_files: knowledge, ai_usage: usage };
+  const fb = fbRowFor(accountId);
+  return { exported_at: nowIso(), account: acc, users, settings, instagram: ig ? { username: ig.username, business_id: ig.business_id, status: ig.status } : null, messenger: fb ? { page_id: fb.page_id, page_name: fb.page_name, status: fb.status } : null, conversations, drafts, knowledge_files: knowledge, ai_usage: usage };
 }
 app.get('/api/account/export', requireAccount, requireOwner, (req, res) => {
   audit(req.accountId, req.user.id, 'export');
@@ -1757,6 +1815,7 @@ function deleteAccountData(accountId) {
     db.prepare('DELETE FROM ig_inbound_events WHERE account_id = ?').run(accountId);
     db.prepare('DELETE FROM account_settings WHERE account_id = ?').run(accountId);
     db.prepare('DELETE FROM instagram_accounts WHERE account_id = ?').run(accountId);
+    db.prepare('DELETE FROM messenger_pages WHERE account_id = ?').run(accountId);
     db.prepare('DELETE FROM oauth_states WHERE account_id = ?').run(accountId);
     db.prepare('DELETE FROM ai_usage WHERE account_id = ?').run(accountId);
     db.prepare('DELETE FROM account_audit WHERE account_id = ?').run(accountId);
@@ -1869,20 +1928,27 @@ function instagramState(accountId) {
   if (ig.status === 'needs_reconnect' || String(getSetting('ig_auth_error') || '').trim()) return 'needs_reconnect';
   return 'connected';
 }
+/** Same for the Facebook Page (Messenger). */
+function messengerState(accountId) {
+  const row = fbRowFor(accountId);
+  if (!fbConfigured() || (row && row.status === 'disconnected')) return 'disconnected';
+  return row?.status === 'needs_reconnect' ? 'needs_reconnect' : 'connected';
+}
 function currentTestDriveState(accountId) {
   return testDriveState({ passedAt: getSetting('test_drive_passed_at'), passedVersion: getSetting('test_drive_passed_version'), currentVersion: currentPromptVersion(accountId) });
 }
 /** Everything that blocks go-live right now (empty = ready). Reads the current account context. */
 function goLiveBlockersFor(accountId) {
   const access = db.prepare('SELECT access_status FROM accounts WHERE id = ?').get(accountId)?.access_status || 'pending';
-  return goLiveBlockers({ accessStatus: access, instagram: instagramState(accountId), checks: scriptChecks(), testDrive: currentTestDriveState(accountId) });
+  return goLiveBlockers({ accessStatus: access, instagram: instagramState(accountId), messenger: messengerState(accountId), checks: scriptChecks(), testDrive: currentTestDriveState(accountId) });
 }
 function onboardingSteps(req) {
   const s = allSettings();
   const errors = scriptChecks().filter((c) => c.level === 'error');
   const sections = ['prompt_persona', 'prompt_offer', 'prompt_qualification', 'prompt_booking', 'prompt_hard_rules'].every((k) => String(s[k] || '').trim());
   const link = s.next_step_type === 'human' || !!String(s.next_step_type === 'call' ? s.calendar_link : s.next_step_link || '').trim();
-  const instagram = instagramState(req.accountId) !== 'disconnected';
+  // The "channel" step: Instagram or Messenger, either one is enough.
+  const instagram = instagramState(req.accountId) !== 'disconnected' || messengerState(req.accountId) !== 'disconnected';
   return {
     instagram,
     template: !!String(s.template_id || '').trim() || sections,
@@ -2466,9 +2532,11 @@ app.patch('/api/conversations/:id', requireAdmin, (req, res) => {
 
 /** Owner-facing sentence for a parked send (shown as the inbox toast). */
 function parkedMessage(reason) {
-  if (reason === 'outside 24h window') return "Not sent: outside Instagram's 24 hour window. The lead has to message you first, or reply from the Instagram app.";
+  if (reason === 'outside 24h window') return "Not sent: outside Meta's 24 hour window. The lead has to message you first, or reply from the Instagram or Messenger app.";
   if (reason === 'instagram needs reconnect') return 'Not sent: Instagram needs reconnecting. Open Settings and reconnect Instagram.';
   if (reason === 'instagram not connected') return 'Not sent: Instagram is not connected.';
+  if (reason === 'messenger needs reconnect') return 'Not sent: Messenger needs reconnecting. Open Settings and reconnect your Facebook Page.';
+  if (reason === 'messenger not connected') return 'Not sent: Messenger is not connected.';
   return 'Not sent: ' + reason + '.';
 }
 
@@ -2576,7 +2644,7 @@ app.post('/api/drafts/:id/approve', requireAdmin, requireActive, async (req, res
 
   // 24h window: an old draft cannot be sent once the lead has been quiet for a
   // day. Checked up front so nothing half-sends; the gate re-checks every message.
-  if (conv.channel === 'instagram' && !igWindowOpen(conv.last_lead_message_at)) {
+  if (metaChannel(conv) && !igWindowOpen(conv.last_lead_message_at)) {
     setNeedsHuman(conv.id, 'outside 24h window');
     return res.status(409).json({ error: parkedMessage('outside 24h window'), reason: 'outside 24h window' });
   }
@@ -2621,7 +2689,7 @@ app.post('/api/drafts/send-all', requireAdmin, requireActive, async (req, res) =
     const messages = conv
       ? parseJ(draft.messages_json, []).map((m) => String(m).trim()).filter(Boolean).slice(0, 2) : [];
     if (!messages.length) { summary.failed++; continue; }
-    if (conv.channel === 'instagram' && !igWindowOpen(conv.last_lead_message_at)) { summary.window++; continue; }
+    if (metaChannel(conv) && !igWindowOpen(conv.last_lead_message_at)) { summary.window++; continue; }
     // Filter ALL messages before delivering any (same reasoning as single approve:
     // a mid-loop block would half-send, and a retry would duplicate the sent half).
     if (messages.some((m) => !applyOutboundFilter(m, regexes).ok)) {
@@ -2687,7 +2755,7 @@ app.get('/api/analytics', requireAdmin, (req, res) => {
   const sales = outcomes.sale;
   res.json({
     window_days: days,
-    leads: { total: convs.length, keyword: convs.filter((c) => c.kw_triggered).length, instagram: convs.filter((c) => c.channel === 'instagram').length, simulator: convs.filter((c) => c.channel === 'sim').length },
+    leads: { total: convs.length, keyword: convs.filter((c) => c.kw_triggered).length, instagram: convs.filter((c) => c.channel === 'instagram').length, messenger: convs.filter((c) => c.channel === 'messenger').length, simulator: convs.filter((c) => c.channel === 'sim').length },
     outcomes, conversion: split, by_version: versions, lead_messages_by_hour: byHour, timezone: tz.timezone, timezone_source: tz.source, median_hours_to_booking: medianHours,
     revenue: { sales, client_value: clientValue, currency: getSetting('currency') || 'GBP', estimated: Math.round(sales * clientValue * 100) / 100 },
   });
@@ -2883,9 +2951,59 @@ app.post('/api/instagram/disconnect', requireAccount, requireOwner, (req, res) =
   const row = igRowFor(req.accountId);
   if (!row) return res.json({ ok: true });
   db.prepare("UPDATE instagram_accounts SET token_enc = NULL, status = 'disconnected', updated_at = ? WHERE account_id = ?").run(nowIso(), req.accountId);
-  setSetting('kill_switch', '1');      // no channel → the AI has nothing to answer on; go-live re-enables it
+  if (!fbConfigured()) setSetting('kill_switch', '1');      // no channel left → the AI has nothing to answer on; go-live re-enables it
   setSetting('ig_auth_error', '');
   audit(req.accountId, req.user.id, 'instagram-disconnect', row.username || row.business_id);
+  res.json({ ok: true });
+});
+
+// ---------- Messenger: connect a Facebook Page ----------
+/** The messenger object shared by /api/me and /api/messenger/status. */
+function messengerShape(accountId) {
+  const row = fbRowFor(accountId);
+  const configured = fbConfigured();
+  return {
+    connected: configured && (!row || row.status !== 'disconnected'),
+    page_id: row?.page_id || (configured ? String(process.env.FB_PAGE_ID || '') : null) || null,
+    page_name: row?.page_name || null,
+    needs_reconnect: row?.status === 'needs_reconnect',
+    via: row?.token_enc ? 'token' : (configured ? 'env' : null),
+    signature_verified: metaSecrets().length > 0,
+  };
+}
+app.get('/api/messenger/status', requireAdmin, async (req, res) => {
+  const st = await fbStatus(); // may set/clear needs_reconnect via onFbAuthError
+  if (st.page?.name) db.prepare('UPDATE messenger_pages SET page_name = ? WHERE account_id = ?').run(st.page.name, req.accountId);
+  res.json({ ...messengerShape(req.accountId), error: st.error, webhook_url: PUBLIC_URL() + '/webhook/messenger', subscription_fields: ['messages', 'message_echoes'], permissions: ['pages_messaging'], verify_token_set: !!(process.env.FB_VERIFY_TOKEN || process.env.IG_VERIFY_TOKEN) });
+});
+/**
+ * Connect a Facebook Page with its Page access token (Meta app > Messenger >
+ * Access tokens, or a system user token). The token is checked against the Page,
+ * the app is subscribed to its message webhooks, and the token is stored
+ * encrypted. One Page per account; a Page can belong to only one account.
+ */
+app.post('/api/messenger/connect', requireAccount, requireOwner, async (req, res) => {
+  const pageId = String(req.body?.page_id || '').trim();
+  const token = String(req.body?.token || '').trim();
+  if (!/^\d{5,25}$/.test(pageId)) return res.status(400).json({ error: 'Enter the numeric Facebook Page ID.' });
+  if (token.length < 20) return res.status(400).json({ error: 'Paste the Page access token.' });
+  const owner = accountForPageId(pageId);
+  if (owner && owner !== req.accountId) return res.status(409).json({ error: 'That Page is already connected to another workspace.' });
+  let page;
+  try { page = await fbPageInfo(pageId, token); } catch (e) { return res.status(400).json({ error: 'Facebook did not accept that Page ID and token: ' + String(e.message).slice(0, 160) }); }
+  const subscribed = await fbSubscribePage(pageId, token);
+  db.prepare(`INSERT INTO messenger_pages (account_id, page_id, page_name, token_enc, status, last_error, updated_at) VALUES (?, ?, ?, ?, 'connected', NULL, ?)
+    ON CONFLICT(account_id) DO UPDATE SET page_id = excluded.page_id, page_name = excluded.page_name, token_enc = excluded.token_enc, status = 'connected', last_error = NULL, updated_at = excluded.updated_at`)
+    .run(req.accountId, page.id, page.name, encrypt(token), nowIso());
+  audit(req.accountId, req.user.id, 'messenger-connect', page.name || page.id);
+  res.json({ ok: true, page, webhook_subscribed: subscribed, ...messengerShape(req.accountId) });
+});
+app.post('/api/messenger/disconnect', requireAccount, requireOwner, (req, res) => {
+  const row = fbRowFor(req.accountId);
+  if (!row) return res.json({ ok: true });
+  db.prepare("UPDATE messenger_pages SET token_enc = NULL, status = 'disconnected', updated_at = ? WHERE account_id = ?").run(nowIso(), req.accountId);
+  if (!igConfigured()) setSetting('kill_switch', '1'); // no channel left
+  audit(req.accountId, req.user.id, 'messenger-disconnect', row.page_name || row.page_id);
   res.json({ ok: true });
 });
 
@@ -3162,59 +3280,95 @@ app.post('/webhook/instagram', async (req, res) => {
   // entry.id → the professional account id we have on file (OAuth rows), else the env id.
   try { events = igParseInbound(req.body, (entryId) => igRowForBusinessId(entryId)?.business_id || null); } catch { return; }
   // Content-free logging only — never log message text, handles, or the raw body.
-  // The inbound/outbound split tells us whether Instagram is delivering echoes
-  // (the owner's own native-app sends) at all.
-  // Content-free health line: the inbound/outbound split confirms echoes (the
-  // owner's own native-app sends) are flowing.
+  // The inbound/outbound split confirms echoes (the owner's own native-app sends) are flowing.
   if (events.length) {
     const ins = events.filter((e) => e.direction === 'in').length;
     console.log(`ig webhook: ${events.length} event(s) — ${ins} inbound, ${events.length - ins} outbound/echo`);
   }
-  for (const ev of events) {
+  for (const ev of events) await processMetaEvent(ev, IG_INBOUND);
+});
+
+// ---------- Messenger webhook (Facebook Page) ----------
+// Same signature check (Meta app secret) and the same event pipeline as
+// Instagram. Subscribe the Page to messages + message_echoes; the callback URL
+// is <PUBLIC_BASE_URL>/webhook/messenger with the same verify token.
+app.get('/webhook/messenger', fbVerifyWebhook);
+app.post('/webhook/messenger', async (req, res) => {
+  if (!verifyWebhookSignature(req)) return res.sendStatus(403);
+  res.sendStatus(200);
+  let events = [];
+  try { events = fbParseInbound(req.body); } catch { return; }
+  if (events.length) {
+    const ins = events.filter((e) => e.direction === 'in').length;
+    console.log(`messenger webhook: ${events.length} event(s) — ${ins} inbound, ${events.length - ins} outbound/echo`);
+  }
+  for (const ev of events) await processMetaEvent(ev, FB_INBOUND);
+});
+
+// What differs per channel when a webhook event arrives.
+const IG_INBOUND = {
+  channel: 'instagram', keyPrefix: '', label: 'Instagram',
+  // Unknown ids fall back to the first account only while it still runs on the env token.
+  accountFor: (bid) => accountForBusinessId(bid) || (process.env.IG_PAGE_TOKEN ? FIRST_ACCOUNT_ID : null),
+  configured: () => igConfigured(),
+  // Instagram has usernames: handle = username, display_name = name.
+  enrich: (convId, leadId) => igProfile(leadId).then((prof) => {
+    if (prof && (prof.username || prof.name)) {
+      db.prepare('UPDATE conversations SET handle = COALESCE(?, handle), display_name = COALESCE(?, display_name) WHERE id = ?')
+        .run(prof.username || null, prof.name || null, convId);
+    }
+  }),
+};
+const FB_INBOUND = {
+  channel: 'messenger', keyPrefix: 'fb:', label: 'Messenger',
+  accountFor: (pageId) => accountForPageId(pageId) || (process.env.FB_PAGE_TOKEN && String(pageId) === String(process.env.FB_PAGE_ID || '') ? FIRST_ACCOUNT_ID : null),
+  configured: () => fbConfigured(),
+  // Messenger has no usernames; the profile API gives the person's name.
+  enrich: (convId, leadId) => fbProfile(leadId).then((prof) => {
+    if (prof && prof.name) db.prepare('UPDATE conversations SET display_name = COALESCE(display_name, ?) WHERE id = ?').run(prof.name, convId);
+  }),
+};
+
+/** One normalized webhook event (Instagram or Messenger) → stored message, AI turn. */
+async function processMetaEvent(ev, inbound) {
     // Per-event isolation: one bad event must never abort the rest of the batch
     // (Meta won't redeliver after our immediate 200).
     try {
       // GUARD 2 — never treat the business account itself as a lead. If leadId is
-      // the connected IG account, this is a self-referential event (a self-DM /
+      // the connected account, this is a self-referential event (a self-DM /
       // owner echo mis-resolved); the AI once answered JD's own typed text as if a
       // lead (atunrolaaluko, mangoboymangoman). Skip it entirely.
       if (ev.businessId && String(ev.leadId) === String(ev.businessId)) {
         console.log('[webhook] ignored self-referential event');
-        continue;
+        return;
       }
       // Dedup: skip our OWN sends echoing back (mid pre-stored by deliver) + retries.
-      if (ev.mid && db.prepare('SELECT 1 FROM messages WHERE mid = ?').get(ev.mid)) continue;
-      // Which account owns this Instagram account? Unknown ids fall back to the
-      // first account only while it still runs on the env token.
-      const accountId = accountForBusinessId(ev.businessId) || (process.env.IG_PAGE_TOKEN ? FIRST_ACCOUNT_ID : null);
-      if (!accountId) { console.log('[webhook] event for an unknown Instagram account ignored'); continue; }
+      if (ev.mid && db.prepare('SELECT 1 FROM messages WHERE mid = ?').get(ev.mid)) return;
+      // Which account owns this Instagram account / Facebook Page?
+      const accountId = inbound.accountFor(ev.businessId);
+      if (!accountId) { console.log(`[webhook] event for an unknown ${inbound.label} account ignored`); return; }
       // Idempotency: claim the event id BEFORE any await. Meta redelivers a
       // webhook it thinks we missed, sometimes concurrently; the second copy hits
       // the primary key here and is dropped, so it can never store a duplicate
       // message or trigger a second AI reply. Events without a mid (rare) are
       // keyed on sender, recipient, timestamp and content.
-      const eventKey = ev.mid ? 'mid:' + ev.mid
-        : 'h:' + sha([ev.direction, ev.leadId, ev.businessId, ev.timestamp, ev.text, (ev.attachments || []).map((x) => x.url).join(',')].join('|'));
+      const eventKey = inbound.keyPrefix + (ev.mid ? 'mid:' + ev.mid
+        : 'h:' + sha([ev.direction, ev.leadId, ev.businessId, ev.timestamp, ev.text, (ev.attachments || []).map((x) => x.url).join(',')].join('|')));
       if (!db.prepare('INSERT OR IGNORE INTO ig_inbound_events (event_key, account_id, received_at) VALUES (?, ?, ?)').run(eventKey, accountId, nowIso()).changes) {
         console.log('[webhook] duplicate event ignored');
-        continue;
+        return;
       }
       let processed = false;
       try {
       await runAs(accountId, async () => {
-      if (!igConfigured()) return;   // disconnected account: keep nothing
+      if (!inbound.configured()) return;   // disconnected account: keep nothing
       // The lead is the OTHER party in both directions — leadId already resolved it.
-      let conv = db.prepare("SELECT * FROM conversations WHERE channel = 'instagram' AND external_id = ? AND account_id = ?").get(ev.leadId, accountId);
+      let conv = db.prepare('SELECT * FROM conversations WHERE channel = ? AND external_id = ? AND account_id = ?').get(inbound.channel, ev.leadId, accountId);
       if (!conv) {
         // Create SYNCHRONOUSLY (no await before the insert) so two near-simultaneous
         // webhooks for the same lead can't each create a duplicate conversation.
-        conv = createConversation({ channel: 'instagram', external_id: ev.leadId, handle: ev.leadId });
-        igProfile(ev.leadId).then((prof) => {
-          if (prof && (prof.username || prof.name)) {
-            db.prepare('UPDATE conversations SET handle = COALESCE(?, handle), display_name = COALESCE(?, display_name) WHERE id = ?')
-              .run(prof.username || null, prof.name || null, conv.id);
-          }
-        }).catch(() => {});
+        conv = createConversation({ channel: inbound.channel, external_id: ev.leadId, handle: ev.leadId });
+        inbound.enrich(conv.id, ev.leadId).catch(() => {});
       }
       // An echo can confirm a send whose outcome we lost (restart or network
       // error mid-send): match it to the 'unknown'/'sending' row by text hash.
@@ -3231,7 +3385,7 @@ app.post('/webhook/instagram', async (req, res) => {
           // correct its source and leave the autopilot counter alone.
           if (ev.mid) db.prepare("UPDATE messages SET source = 'ai' WHERE mid = ? AND source = 'human'").run(ev.mid);
         } else {
-          // Owner replied from the IG app → reset the guardrail, don't run the AI turn.
+          // Owner replied from the Instagram / Messenger app → reset the guardrail, don't run the AI turn.
           db.prepare('UPDATE conversations SET consecutive_ai_sends = 0 WHERE id = ?').run(conv.id);
         }
       } else {
@@ -3245,9 +3399,8 @@ app.post('/webhook/instagram', async (req, res) => {
         if (!processed) db.prepare('DELETE FROM ig_inbound_events WHERE event_key = ?').run(eventKey);
         throw e;
       }
-    } catch (e) { console.error('ig webhook event error:', e.message); }
-  }
-});
+    } catch (e) { console.error(`${inbound.label.toLowerCase()} webhook event error:`, e.message); }
+}
 
 // ---------- calendly booking webhook (dormant until subscribed) ----------
 /**

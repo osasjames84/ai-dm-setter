@@ -168,6 +168,7 @@ function renderConvList() {
       '<div class="conv-mid"><div class="conv-name-row"><span class="conv-name">' + priorityCue + esc(c.display_name || c.handle) + '</span>' +
       '<span class="conv-time">' + (c.pending_draft ? '<span class="draft-dot" title="AI draft waiting"></span>' : '') + timeAgo(c.last_message_at || c.created_at) + '</span></div>' +
       '<div class="conv-stage-line">' + stageBadge(c.stage) +
+      (c.channel === 'messenger' ? '<span class="channel-tag" title="Facebook Messenger">Messenger</span>' : '') +
       (c.call_time && new Date(c.call_time).getTime() > Date.now() ? '<span title="Call: ' + esc(callTimeFmt(c.call_time)) + '" style="display:inline-flex;color:var(--muted);margin-left:6px;vertical-align:middle">' + icon('calendar', 13) + '</span>' : '') +
       '</div>' +
       '<div class="conv-preview">' + esc(c.last_text || 'No messages yet') + '</div></div>' +
@@ -277,11 +278,12 @@ function renderThread() {
   applyWindowState(c);
   renderMsgs();
 }
-/** Instagram only allows replies within 24 hours of the lead's last message.
- *  Disable the composer once that window is closed (5 minutes early, like the
- *  server), so nobody can try to message a lead first or too late. */
+/** Instagram and Messenger only allow replies within 24 hours of the lead's last
+ *  message. Disable the composer once that window is closed (5 minutes early,
+ *  like the server), so nobody can try to message a lead first or too late. */
+const CHANNEL_LABEL = { instagram: 'Instagram', messenger: 'Messenger' };
 function windowState(c) {
-  if (!c || c.channel !== 'instagram') return { open: true };
+  if (!c || !CHANNEL_LABEL[c.channel]) return { open: true };
   if (typeof c.window_open === 'boolean') return { open: c.window_open, closesAt: c.window_closes_at || null };
   const leads = (state.thread?.messages || []).filter((m) => m.role === 'lead');
   const last = leads.length ? leads[leads.length - 1].created_at : c.last_lead_message_at;
@@ -295,9 +297,10 @@ function applyWindowState(c) {
   if (!note || !input || !send) return;
   input.disabled = !w.open; send.disabled = !w.open;
   note.hidden = w.open;
+  const via = CHANNEL_LABEL[c.channel] || 'Instagram';
   if (!w.open) note.textContent = w.never
-    ? 'Waiting for this person to message you first. Instagram only lets you reply after they do.'
-    : 'Instagram only allows replies within 24 hours of their last message. This window closed ' + (w.closesAt ? new Date(w.closesAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : 'earlier') + '. You can reply as soon as they message again.';
+    ? 'Waiting for this person to message you first. ' + via + ' only lets you reply after they do.'
+    : via + ' only allows replies within 24 hours of their last message. This window closed ' + (w.closesAt ? new Date(w.closesAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : 'earlier') + '. You can reply as soon as they message again.';
 }
 function dayLabel(iso) {
   if (!iso) return '';
@@ -503,8 +506,8 @@ function renderProspect() {
     '<div class="prospect-top">' +
     '<div class="prospect-av-wrap">' + avatarHtml(c.handle, c.display_name, 64) + '</div>' +
     '<div class="p-name">' + esc(c.display_name || c.handle) + '</div>' +
-    '<div class="p-handle">@' + esc(c.handle) + '</div>' +
-    '<div class="follow-lines">' + (c.channel === 'sim' ? 'Simulator conversation' : 'Instagram DM') +
+    (c.channel === 'messenger' ? '' : '<div class="p-handle">@' + esc(c.handle) + '</div>') +
+    '<div class="follow-lines">' + (c.channel === 'sim' ? 'Simulator conversation' : c.channel === 'messenger' ? 'Facebook Messenger' : 'Instagram DM') +
     (c.needs_human ? '<br><b style="color:var(--red)">Flagged for review</b>' : '') + '</div>' +
     '<div class="prospect-stage-row">' + stageBadge(c.stage) +
     '<select id="stage-sel">' + STAGES.map((s) => '<option value="' + s + '"' + (c.stage === s ? ' selected' : '') + '>' + STAGE_ONE[s] + '</option>').join('') + '</select>' +

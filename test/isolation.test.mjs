@@ -270,6 +270,23 @@ try {
       .run(meG.account.id, encrypt('fake-token-never-used'), new Date(Date.now() + 50 * 86400_000).toISOString(), now, now);
     db.close();
   }
+  // Messenger: a Page connected to one workspace stays there.
+  {
+    const db = new DatabaseSync(path.join(srv.data, 'dmsetter.sqlite'));
+    db.exec('PRAGMA busy_timeout=5000');
+    const { encrypt } = await import('../lib/crypto.js');
+    db.prepare("INSERT INTO messenger_pages (account_id, page_id, page_name, token_enc, status, updated_at) VALUES ('acc_1', '102000000000555', 'JD Page', ?, 'connected', ?)")
+      .run(encrypt('fake-page-token-never-used'), new Date().toISOString());
+    db.close();
+  }
+  await test('messenger: another workspace cannot claim, see or disconnect acc_1\'s Page', async () => {
+    const claim = await g.api('POST', '/api/messenger/connect', { page_id: '102000000000555', token: 'some-page-token-0123456789' });
+    assert.equal(claim.status, 409);
+    const mine = (await g.api('GET', '/api/me')).json.messenger;
+    assert.equal(mine.connected, false); assert.equal(mine.page_name, null);
+    assert.equal((await g.api('POST', '/api/messenger/disconnect')).status, 200);
+    assert.equal((await jd.api('GET', '/api/me')).json.messenger.page_name, 'JD Page');
+  });
   await test('instagram connected leaves only the test drive blocking', async () => {
     const o = await onboarding(); assert.equal(o.steps.instagram, true); assert.deepEqual(sections(o), ['test_drive']);
   });

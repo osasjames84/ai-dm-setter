@@ -45,6 +45,15 @@ Instagram (Meta app):
 | `IG_VERIFY_TOKEN` | webhook verify token, same string as in the dashboard |
 | `IG_PAGE_TOKEN`, `IG_BUSINESS_ID` | legacy env token for the first workspace only; not needed with Instagram Login |
 
+Messenger (Facebook Page, same Meta app):
+
+| Variable | Purpose |
+|---|---|
+| `FB_PAGE_ID`, `FB_PAGE_TOKEN` | optional env Page for the first workspace. Otherwise each workspace connects its Page in Settings > Messenger with the Page ID and a Page access token (stored encrypted) |
+| `FB_VERIFY_TOKEN` | optional Messenger webhook verify token; falls back to `IG_VERIFY_TOKEN` |
+
+Messenger setup: add the Messenger product to the Meta app, request `pages_messaging`, set the webhook callback to `<PUBLIC_BASE_URL>/webhook/messenger` with the verify token, and subscribe the Page to `messages` and `message_echoes` (connecting in Settings subscribes it automatically). Webhooks are verified with `IG_APP_SECRET` or `META_APP_SECRET`, exactly like Instagram's. Messenger sends share Instagram's gate: the 24h window, the pause on reconnect and the send limits below.
+
 Send limits (defaults shown; per workspace settings `rate_min_interval_sec`, `rate_max_per_hour`, `rate_max_per_lead_hour`, `stale_send_minutes` can tighten them, never past 1s spacing, 200 an hour, 30 per lead an hour):
 
 | Variable | Default | Meaning |

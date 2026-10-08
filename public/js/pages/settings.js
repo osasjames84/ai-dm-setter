@@ -95,8 +95,9 @@ function renderSettings() {
     '<div class="settings-wrap"><div class="settings-intro">Configure your account and automation rules</div><div class="settings-col">' +
 
     /* 1 — Account */
-    '<div class="card settings-card">' + cardHeadHtml(chipHtml('user', 'var(--accent-text)', 'var(--indigo-soft)'), 'Account', 'Your profile and Instagram') +
+    '<div class="card settings-card">' + cardHeadHtml(chipHtml('user', 'var(--accent-text)', 'var(--indigo-soft)'), 'Account', 'Your profile, Instagram and Messenger') +
     igSectionHtml(state.igStatus) +
+    messengerCard(state.me?.messenger) +
     '<div class="set-row" style="margin-top:4px"><div><div class="sr-label">Engine status</div><div class="sr-sub">Anthropic runtime availability</div></div><span class="tag ' + (ai ? 'green' : 'red') + '">' + (ai ? 'API key loaded' : 'No API key') + '</span></div></div>' +
 
     /* 2 — Calendar Link */
@@ -324,6 +325,7 @@ function renderSettings() {
 
   /* ---- Instagram: Refresh Connection reuses loadIgStatus() ---- */
   bindInstagram($('#settings-page'), loadIgStatus);
+  bindMessenger($('#settings-page'), loadIgStatus);
   const igSync = $('#ig-sync');
   if (igSync) igSync.addEventListener('click', async () => {
     const orig = igSync.innerHTML; igSync.disabled = true; igSync.innerHTML = icon('chats', 14) + 'Syncing your Instagram…';
