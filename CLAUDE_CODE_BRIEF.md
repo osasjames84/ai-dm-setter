@@ -41,7 +41,7 @@ Like SetDM, the app must expose editable prompt sections in settings where the o
 7. Webhook: GET verification echoes challenge; POST with a sample Meta payload creates/updates a conversation; outbound send no-ops cleanly without a token.
 8. UI: zero console errors; every button wired; funnel board reflects state changes within one poll cycle.
 9. Ghost-voice audit: 10 sample AI replies across scenarios; zero third-person slips, zero prices, zero paragraphs, all sound like a real person texting.
-10. README with: run instructions, env vars, Meta app setup steps (webhook URL, verify token, permissions: instagram_manage_messages, pages_manage_metadata), deploy notes.
+10. README with: run instructions, env vars, Meta app setup steps (webhook URL, verify token, permissions: instagram_business_basic, instagram_business_manage_messages via Instagram Login; see docs/META_REVIEW.md), deploy notes.
 
 ## Review protocol per phase
 

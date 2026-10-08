@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { PERSONAS, PERSONA_BY_ID } from './lib/personas.js';
-import { igConfigured, igVerifyWebhook, igParseInbound, igSendText, igSendAudio, igSendAction, igProfile, igStatus, igFetchHistory, onIgAuthError, setCredsResolver, igOauthConfigured, igAuthUrl, igCompleteOauth, igRefreshToken, igSubscribeApp } from './lib/instagram.js';
+import { igConfigured, igVerifyWebhook, igParseInbound, igSendText, igSendAudio, igSendAction, igProfile, igStatus, igFetchHistory, onIgAuthError, setCredsResolver, igOauthConfigured, igAuthUrl, igCompleteOauth, igRefreshToken, igSubscribeApp, IG_SCOPES, IgSendError, igWindowOpen, setOutboundContextResolver, setSendPolicyResolver, onIgSendIssue } from './lib/instagram.js';
 import { initCrypto, encrypt, decrypt } from './lib/crypto.js';
 import { generateMove, varyMessage, applyOutboundFilter, stripDashes, buildSystemPrompt, anthropicClient, PROMPT_SECTIONS } from './lib/engine.js';
 import { openStream, bump as bumpEvent, initEvents, closeStreams } from './lib/events.js';
@@ -18,12 +18,12 @@ import { startTestDrive, getJob as getTestDrive, listJobs as listTestDrives, sha
 import { leadMove } from './lib/personas.js';
 import { reportUsage } from './lib/usage.js';
 import { analyzeDms, generateIdeas, classifyMessages } from './lib/content.js';
-import { createScheduler, withinMessagingWindow } from './lib/scheduler.js';
+import { createScheduler } from './lib/scheduler.js';
 import { matchExactPhrase } from './lib/triggers.js';
 import multer from 'multer';
 import { initKnowledge, addDocument, listDocuments, deleteDocument, knowledgeText, isSupported } from './lib/knowledge.js';
 import { refreshCalendly, calendlyText, setupWebhook } from './lib/calendly.js';
-import { initAttachments, saveFromUrl, saveBuffer, attachmentPath, attachmentMime, attachmentKind } from './lib/attachments.js';
+import { initAttachments, saveFromUrl, saveBuffer, attachmentPath, attachmentMime, attachmentKind, deleteAttachment } from './lib/attachments.js';
 import { normalizeAudio, ffmpegAvailable } from './lib/audioconvert.js';
 import { transcribeAudio } from './lib/transcribe.js';
 import { initNotify, notify, notifyReady } from './lib/notify.js';
@@ -32,6 +32,7 @@ import { captureException, errorMiddleware, errorsReady } from './lib/errors.js'
 import { installLogging } from './lib/logs.js';
 import { offsiteReady, uploadBackup } from './lib/offsite.js';
 import { knowledgeDir } from './lib/knowledge.js';
+import { legalPage, privacyPage, termsPage, dataDeletionPage } from './lib/legal.js';
 installLogging();
 import { runMigrations } from './lib/migrations.js';
 import { runAs, enterAs, outside, currentAccount, currentAccountOrFirst, FIRST_ACCOUNT_ID } from './lib/tenancy.js';
@@ -263,6 +264,14 @@ const SETTING_DEFAULTS = {
   end_on_question: '1',             // a live turn must end with a question or next step; the engine retries once when the model ends flat
   lead_profiles: '1',               // keep a per-lead profile (goal, blocker, budget signal) and feed it to the AI
   image_vision: '1',                // describe inbound photos so the AI can react to screenshots
+
+  // ---- Instagram send limits (blank = operator default from env) ----
+  // The outbound gate in lib/instagram.js clamps these to safe bounds: spacing
+  // at least 1s, at most 200 sends an hour, at most 30 automated sends per lead an hour.
+  rate_min_interval_sec: '',        // seconds between two sends from this account (default 2)
+  rate_max_per_hour: '',            // sends per hour for this account (default 100)
+  rate_max_per_lead_hour: '',       // automated sends per lead per hour (default 10)
+  stale_send_minutes: '',           // queued work older than this is parked for review, not sent (default 30)
 
   // ---- System state (not user-editable via the Settings form) ----
   ig_auth_error: '',                // JSON {at, detail} when the IG token is dead/revoked; '' when healthy (FEATURE 2)
@@ -564,6 +573,29 @@ setCredsResolver(() => {
   }
   return null;
 });
+
+// Outbound gate context (lib/instagram.js): for a recipient of the CURRENT
+// account, when did that lead last message us, and is sending paused? A
+// recipient with no conversation has no inbound time, so the gate refuses: the
+// app never starts a conversation.
+setOutboundContextResolver((recipientId) => {
+  const a = currentAccountOrFirst('ig-gate');
+  const row = db.prepare("SELECT last_lead_message_at FROM conversations WHERE channel = 'instagram' AND external_id = ? AND account_id = ?").get(String(recipientId), a);
+  return { lastInboundAt: row?.last_lead_message_at || null, paused: igPausedReason(a) };
+});
+// Per-account limits (blank settings fall back to the env defaults in the gate).
+setSendPolicyResolver(() => {
+  const sec = Number(getSetting('rate_min_interval_sec'));
+  return {
+    minIntervalMs: getSetting('rate_min_interval_sec') && Number.isFinite(sec) ? sec * 1000 : '',
+    maxPerHour: getSetting('rate_max_per_hour') || '',
+    maxPerLeadHour: getSetting('rate_max_per_lead_hour') || '',
+  };
+});
+/** Why sending is paused for this account ('instagram needs reconnect'), or null. */
+function igPausedReason(accountId) {
+  return igRowFor(accountId)?.status === 'needs_reconnect' ? 'instagram needs reconnect' : null;
+}
 
 // ---------- prompt versions (E.8) ----------
 // Every save that changes a prompt section becomes a numbered version; AI
@@ -920,6 +952,89 @@ function discardPending(convId) {
  * lead hasn't heard that clip yet, send the coach's voice note (first-time-only,
  * per lead per clip). Best-effort — a failed audio send never blocks the text.
  */
+// ---------- idempotent Instagram sends ----------
+// Every outbound Instagram message is claimed in outbound_sends under an
+// idempotency key BEFORE the Graph call. A retried job, a double click, or a
+// restart mid-send therefore finds the row and never sends the same message twice.
+const sha = (x) => crypto.createHash('sha256').update(String(x)).digest('hex');
+/**
+ * Claim a send. Synchronous (node:sqlite), so two concurrent attempts with the
+ * same key cannot both claim. Returns { claimed } | { duplicate, mid } | { inflight, state }.
+ * A previously failed or parked row may be claimed again (nothing reached the lead).
+ */
+function claimSend(key, conv, kind, textHash) {
+  const now = nowIso();
+  const row = db.prepare('SELECT state, mid FROM outbound_sends WHERE idem_key = ?').get(key);
+  if (row) {
+    if (row.state === 'sent') return { duplicate: true, mid: row.mid };
+    if (row.state === 'sending' || row.state === 'unknown') return { inflight: true, state: row.state };
+    db.prepare("UPDATE outbound_sends SET state = 'sending', error = NULL, updated_at = ? WHERE idem_key = ?").run(now, key);
+    return { claimed: true };
+  }
+  db.prepare("INSERT INTO outbound_sends (idem_key, account_id, conversation_id, kind, text_hash, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'sending', ?, ?)")
+    .run(key, conv.account_id || currentAccountOrFirst('claimSend'), conv.id, kind, textHash || null, now, now);
+  return { claimed: true };
+}
+function settleSend(key, state, mid = null, error = null) {
+  db.prepare('UPDATE outbound_sends SET state = ?, mid = COALESCE(?, mid), error = ?, updated_at = ? WHERE idem_key = ?')
+    .run(state, mid, error ? String(error).slice(0, 300) : null, nowIso(), key);
+}
+/** Default key for an automated send: same conversation, same lead turn, same text = same send. */
+function sendKey(conv, source, text) {
+  return sha([conv.id, source, latestLeadMessageId(conv.id) ?? '-', normForDedupe(text)].join('|'));
+}
+/**
+ * Run one Instagram send under its idempotency key.
+ *  - success: row 'sent' with the Meta message id, returns { ok, mid }.
+ *  - already sent under this key: { ok, deduped } and nothing goes out.
+ *  - gate refusal or a Meta error that must not be retried (24h window, rate
+ *    limit, reconnect, blocked lead): row 'parked'/'failed', thread flagged
+ *    needs_human with the reason, returns { ok:false, parked:true, reason }.
+ *  - network error (no answer from Meta): the message MAY have arrived, so the
+ *    row is 'unknown' and the thread flagged; it is never resent automatically.
+ *  - anything else (5xx, unknown): row 'failed' and rethrown for the caller's
+ *    existing "send failed" handling.
+ */
+async function igSendOnce(conv, key, kind, textHash, sendFn) {
+  const claim = claimSend(key, conv, kind, textHash);
+  if (claim.duplicate) return { ok: true, deduped: true, mid: claim.mid };
+  if (claim.inflight) {
+    return { ok: false, parked: true, reason: claim.state === 'unknown' ? 'send outcome unknown, check instagram before resending' : 'send already in progress' };
+  }
+  try {
+    const sent = await sendFn();
+    const mid = sent && sent.message_id ? String(sent.message_id) : null;
+    settleSend(key, 'sent', mid);
+    return { ok: true, mid };
+  } catch (e) {
+    if (e instanceof IgSendError && (e.park || e.kind === 'network')) {
+      settleSend(key, e.kind === 'network' ? 'unknown' : (e.gate ? 'parked' : 'failed'), null, e.message);
+      if (e.kind !== 'not_connected') setNeedsHuman(conv.id, e.reason);
+      console.log(`[ig-send] parked (${e.kind}) conv ${conv.id}`);
+      return { ok: false, parked: true, reason: e.reason, kind: e.kind };
+    }
+    settleSend(key, 'failed', null, e.message);
+    throw e;
+  }
+}
+
+/**
+ * An echo webhook (a message the account sent) that matches a send we lost
+ * track of ('unknown' after a restart or network error, or still 'sending')
+ * proves it went out: mark it sent and lift the "outcome unknown" flag.
+ * Returns null, or { human } when the echo was one of our sends.
+ */
+function confirmUnknownSend(convId, text, mid) {
+  const row = db.prepare("SELECT idem_key, state FROM outbound_sends WHERE conversation_id = ? AND kind = 'text' AND state IN ('unknown', 'sending') AND text_hash = ? ORDER BY created_at DESC LIMIT 1")
+    .get(convId, sha(normForDedupe(text)));
+  if (!row) return null;
+  settleSend(row.idem_key, 'sent', mid || null);
+  if (row.state === 'unknown') {
+    db.prepare("UPDATE conversations SET needs_human = 0, needs_human_reason = NULL WHERE id = ? AND needs_human_reason LIKE 'send outcome unknown%'").run(convId);
+  }
+  return { human: row.idem_key.startsWith('human:') };
+}
+
 // Punctuation-/apostrophe-proof text for phrase matching ("I'm not an AI" == "im not an ai").
 const normForMatch = (x) => String(x || '').toLowerCase().replace(/['’‘`]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
 
@@ -935,8 +1050,10 @@ async function maybeFireVoiceNote(conv, text) {
     if (!attachmentPath(audioId)) return;                                   // clip file missing
     if (db.prepare('SELECT 1 FROM messages WHERE conversation_id = ? AND att_id = ? LIMIT 1').get(conv.id, audioId)) return; // already heard it
     try {
-      const sent = await igSendAudio(conv.external_id, PUBLIC_BASE + '/api/attachments/' + audioId);
-      addMessage(conv.id, 'setter', '[voice note]', 'ai', sent && sent.message_id ? String(sent.message_id) : null, 'audio', audioId);
+      // First-time-only per lead per clip, so the clip id is the whole idempotency key.
+      const out = await igSendOnce(conv, 'arsenal:' + conv.id + ':' + audioId, 'audio', null,
+        () => igSendAudio(conv.external_id, PUBLIC_BASE + '/api/attachments/' + audioId, { source: 'ai' }));
+      if (out.ok && !out.deduped) addMessage(conv.id, 'setter', '[voice note]', 'ai', out.mid, 'audio', audioId);
     } catch (e) { console.error('[voice-note] send failed:', e.message); }
     return; // at most one clip per turn
   }
@@ -967,7 +1084,16 @@ function tagBookingLink(text, convId) {
   return String(text).replace(new RegExp(escapeRe(link) + '(?![?&]utm_content=)', 'g'), tagged);
 }
 const escapeRe = (x) => String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-async function deliver(conv, text, source) {
+/**
+ * opts.idempotencyKey: a stable key for this exact send (draft approvals use
+ * 'draft:<id>:<n>'). Automated sends default to conversation + lead turn + text;
+ * human sends without a key are never deduplicated.
+ * Instagram sends go through igSendOnce → lib/instagram.js outbound gate, which
+ * enforces the 24h window, the pause on reconnect and the rate limits for EVERY
+ * caller. A refused send returns { ok:false, parked:true, reason } with the
+ * thread flagged needs_human (reason e.g. 'outside 24h window').
+ */
+async function deliver(conv, text, source, opts = {}) {
   let sentMid = null;
   if (!accountActive(conv.account_id || currentAccountOrFirst('deliver'))) return { ok: false, reason: 'account not active' };
   // Optional owner-enabled dash cleanup, applied before anything else so every
@@ -1000,10 +1126,15 @@ async function deliver(conv, text, source) {
   }
   // E.12: tag the booking link with the conversation id so a Calendly booking matches exactly.
   filtered.text = tagBookingLink(filtered.text, conv.id);
-  if (conv.channel === 'instagram' && igConfigured() && conv.external_id) {
+  if (conv.channel === 'instagram') {
+    // An Instagram thread with no working connection: nothing is sent and
+    // nothing is stored as if it had been.
+    if (!igConfigured() || !conv.external_id) return { ok: false, parked: true, reason: 'instagram not connected' };
     // Instagram typing indicator: for AI/autopilot sends, mark the thread read,
     // show typing, then pause a length-scaled beat so the bubble is visible.
-    if (source !== 'human' && getSetting('typing_indicator') === '1') {
+    // Skipped outside the window (the gate would refuse the real send anyway).
+    const leadAt = getConv(conv.id)?.last_lead_message_at || conv.last_lead_message_at;
+    if (source !== 'human' && getSetting('typing_indicator') === '1' && igWindowOpen(leadAt)) {
       try {
         await igSendAction(conv.external_id, 'mark_seen');
         await igSendAction(conv.external_id, 'typing_on');
@@ -1011,8 +1142,12 @@ async function deliver(conv, text, source) {
       } catch { /* presence is best-effort — never block the real message */ }
     }
     if (source !== 'human') inFlightSends.set(String(conv.external_id), Date.now() + 20_000);
-    const sent = await igSendText(conv.external_id, filtered.text);
-    sentMid = sent && sent.message_id ? String(sent.message_id) : null;
+    const key = opts.idempotencyKey || (source === 'human' ? 'human:' + newId() : sendKey(conv, source, filtered.text));
+    const out = await igSendOnce(conv, key, 'text', sha(normForDedupe(filtered.text)),
+      () => igSendText(conv.external_id, filtered.text, { source }));
+    if (!out.ok) { inFlightSends.delete(String(conv.external_id)); return out; }
+    if (out.deduped) { console.log(`[idempotency] send already done for conv ${conv.id}, skipped`); return { ok: true, deduped: true }; }
+    sentMid = out.mid;
   }
   // sim channel: delivery is just persistence (the persona reply is scheduled below).
   // Store the IG message id so the echo webhook for THIS send is deduped, not double-shown.
@@ -1040,10 +1175,15 @@ async function deliverVoiceNote(conv, audioId, source, caption = '[voice note]')
     return { ok: false, reason: 'test text blocked' };
   }
   let sentMid = null;
-  if (conv.channel === 'instagram' && igConfigured() && conv.external_id && PUBLIC_BASE) {
+  if (conv.channel === 'instagram') {
+    if (!igConfigured() || !conv.external_id) return { ok: false, parked: true, reason: 'instagram not connected' };
+    if (!PUBLIC_BASE) return { ok: false, reason: 'PUBLIC_BASE_URL is not set, Instagram cannot fetch the clip' };
     try {
-      const sent = await igSendAudio(conv.external_id, PUBLIC_BASE + '/api/attachments/' + audioId);
-      sentMid = sent && sent.message_id ? String(sent.message_id) : null;
+      const out = await igSendOnce(conv, 'voice:' + sendKey(conv, source, 'audio:' + audioId), 'audio', null,
+        () => igSendAudio(conv.external_id, PUBLIC_BASE + '/api/attachments/' + audioId, { source }));
+      if (!out.ok) return out;
+      if (out.deduped) return { ok: true, deduped: true };
+      sentMid = out.mid;
     } catch (e) { console.error('[followup-audio] send failed:', e.message); return { ok: false, reason: e.message }; }
   }
   addMessage(conv.id, 'setter', caption, source, sentMid, 'audio', audioId);
@@ -1072,9 +1212,14 @@ function scheduleProfileRefresh(convId) {
 }
 
 /** A lead just spoke: reset the AI-send guardrail + clear any queued follow-up. */
-function onLeadMessage(convId) {
+function onLeadMessage(convId, sentAtMs = null) {
   scheduleProfileRefresh(convId);
-  const at = nowIso();
+  // The 24h window runs from when the lead SENT the message (the webhook
+  // timestamp), not from when we processed it: a webhook Meta redelivers hours
+  // later must not reopen a window that has already closed. Never in the future.
+  let ts = Number(sentAtMs);
+  if (Number.isFinite(ts) && ts > 0 && ts < 1e12) ts *= 1000; // some payloads carry seconds
+  const at =Number.isFinite(ts) && ts > 0 && ts < Date.now() ? new Date(ts).toISOString() : nowIso();
   // Also reset followup_count: a returning lead who previously got 2 nudges would
   // otherwise be at count=2 and get marked `dead` ~15s after the AI answers them.
   // Speaking again restarts the follow-up cadence from zero.
@@ -1253,6 +1398,8 @@ const scheduler = createScheduler({
   markReminderSent,
   leadSpokeSince,
   humanConfirmStages: HUMAN_CONFIRM_STAGES,
+  // Instagram sends paused for this conversation's account (needs reconnect)? → reason or null.
+  automationPaused: (conv) => (conv && conv.channel === 'instagram' ? igPausedReason(conv.account_id || currentAccountOrFirst('paused')) : null),
   // FEATURE 1/3: parked 24h-window drafts notify the owner. Best-effort, fire-and-forget.
   notify: (subject, text) => { notify(subject, text).catch(() => {}); },
 });
@@ -1274,6 +1421,42 @@ onIgAuthError((detail) => {
     db.prepare("UPDATE instagram_accounts SET status = 'connected', last_error = NULL, updated_at = ? WHERE account_id = ? AND status = 'needs_reconnect'").run(nowIso(), a);
   }
 });
+
+// Rate-limit back-off and policy restrictions from Meta: tell the owner, at most
+// once an hour per account and kind, so a burst of refused sends stays quiet.
+const sendIssueNotifiedAt = new Map();
+onIgSendIssue((kind, detail) => {
+  const a = currentAccountOrFirst('ig-issue');
+  const k = a + ':' + kind;
+  if (Date.now() - (sendIssueNotifiedAt.get(k) || 0) < 3600_000) return;
+  sendIssueNotifiedAt.set(k, Date.now());
+  const subject = kind === 'policy_block' ? 'Instagram restricted sending' : 'Instagram rate limit reached';
+  const text = kind === 'policy_block'
+    ? 'Instagram refused a message for a policy reason. Automated sending is paused for 6 hours. Check the account in the Instagram app before turning anything back on. Detail: '
+    : 'Instagram asked us to slow down. Sending is backing off automatically and refused messages are waiting in Needs Review. Detail: ';
+  notify(subject, text + String(detail).slice(0, 200)).catch(() => {});
+});
+
+// Boot: any send still 'sending' was cut off by a restart or crash mid-send.
+// Meta may or may not have delivered it, so it is marked 'unknown' and its
+// thread flagged; it is never retried automatically (the echo webhook confirms
+// it if it did go out).
+{
+  const stuck = db.prepare("SELECT idem_key, conversation_id, account_id FROM outbound_sends WHERE state = 'sending'").all();
+  for (const r of stuck) {
+    db.prepare("UPDATE outbound_sends SET state = 'unknown', updated_at = ? WHERE idem_key = ?").run(nowIso(), r.idem_key);
+    runAs(r.account_id, () => { if (getConv(r.conversation_id)) setNeedsHuman(r.conversation_id, 'send outcome unknown after restart, check instagram before resending'); });
+  }
+  if (stuck.length) console.log(`[ig-send] ${stuck.length} send(s) interrupted by a restart marked unknown and flagged`);
+}
+// Housekeeping: send-state rows older than 30 days and webhook dedupe keys older
+// than 7 days are no longer needed (Meta retries stop within hours).
+function pruneSendRecords() {
+  db.prepare('DELETE FROM outbound_sends WHERE updated_at < ?').run(new Date(Date.now() - 30 * 86400_000).toISOString());
+  db.prepare('DELETE FROM ig_inbound_events WHERE received_at < ?').run(new Date(Date.now() - 7 * 86400_000).toISOString());
+}
+try { pruneSendRecords(); } catch (e) { console.error('[prune] send records:', e.message); }
+setInterval(() => { try { pruneSendRecords(); } catch { /* best-effort */ } }, 24 * 3600_000).unref();
 
 // ---------- auth / settings ----------
 app.post('/api/auth', limitAuthIp, requireAdmin, (req, res) => res.json({ ok: true }));
@@ -1343,7 +1526,7 @@ const magicPage = (token) => '<!doctype html><html><head><meta charset="utf-8"><
   + '<p style="color:#a7abb4;line-height:1.6;margin:0 0 20px">Tap continue to finish signing in on this device.</p>'
   + '<input type="hidden" name="token" value="' + String(token).replace(/[^A-Za-z0-9_-]/g, '') + '">'
   + '<button type="submit" style="background:#6366f1;color:#fff;border:0;border-radius:10px;padding:12px 22px;font-size:15px;font-weight:600;cursor:pointer">Continue</button></form></body></html>';
-const expiredPage = () => legalPage('Link expired', [['Sign-in link', 'That link has expired or was already used. Go back to the app and request a new one.']]);
+const expiredPage = () => legalPage('Link expired', [['Sign-in link', 'That link has expired or was already used. Go back to the app and request a new one.']], { plain: true });
 app.get('/auth/magic', limitPublicIp, (req, res) => {
   if (!peekMagicLink(req.query.token)) return res.status(400).type('html').send(expiredPage());
   res.type('html').send(magicPage(req.query.token));
@@ -1535,18 +1718,31 @@ app.get('/api/account/export', requireAccount, requireOwner, (req, res) => {
   res.json(exportAccount(req.accountId));
 });
 
+/**
+ * Erase one conversation everywhere it lives: messages, the lead's downloaded
+ * photos / voice notes / videos, drafts, stage history and send records. Used
+ * by account deletion, Meta's data deletion callback and the per-conversation
+ * delete (a lead's erasure request). Call inside tx().
+ */
+function purgeConversation(convId) {
+  for (const r of db.prepare("SELECT att_id FROM messages WHERE conversation_id = ? AND role = 'lead' AND att_id IS NOT NULL").all(convId)) deleteAttachment(r.att_id);
+  db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(convId);
+  db.prepare('DELETE FROM stage_events WHERE conversation_id = ?').run(convId);
+  db.prepare('DELETE FROM drafts WHERE conversation_id = ?').run(convId);
+  db.prepare('DELETE FROM outbound_sends WHERE conversation_id = ?').run(convId);
+  db.prepare('DELETE FROM conversations WHERE id = ?').run(convId);
+}
+
 /** Remove every row and file an account owns. The first account is never deleted this way. */
 function deleteAccountData(accountId) {
   if (accountId === FIRST_ACCOUNT_ID) throw new Error('The first account cannot be deleted');
   tx(() => {
     const convIds = db.prepare('SELECT id FROM conversations WHERE account_id = ?').all(accountId).map((r) => r.id);
-    for (const id of convIds) {
-      db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(id);
-      db.prepare('DELETE FROM stage_events WHERE conversation_id = ?').run(id);
-      db.prepare('DELETE FROM drafts WHERE conversation_id = ?').run(id);
-    }
+    for (const id of convIds) purgeConversation(id);
     db.prepare('DELETE FROM conversations WHERE account_id = ?').run(accountId);
     db.prepare('DELETE FROM drafts WHERE account_id = ?').run(accountId);
+    db.prepare('DELETE FROM outbound_sends WHERE account_id = ?').run(accountId);
+    db.prepare('DELETE FROM ig_inbound_events WHERE account_id = ?').run(accountId);
     db.prepare('DELETE FROM account_settings WHERE account_id = ?').run(accountId);
     db.prepare('DELETE FROM instagram_accounts WHERE account_id = ?').run(accountId);
     db.prepare('DELETE FROM oauth_states WHERE account_id = ?').run(accountId);
@@ -1776,7 +1972,7 @@ app.get('/api/instagram/status', requireAdmin, async (req, res) => {
   const host = req.headers['x-forwarded-host'] || req.headers.host || 'your-domain';
   st.webhook_url = `${proto}://${host}/webhook/instagram`;
   st.subscription_field = 'messages';
-  st.permissions = ['instagram_business_manage_messages', 'pages_manage_metadata'];
+  st.permissions = IG_SCOPES.slice(); // Instagram API with Instagram Login: instagram_business_basic + instagram_business_manage_messages
   // FEATURE 2: surface a dead/revoked token to the UI. Read AFTER igStatus so a
   // just-healed token (igStatus cleared it) reports null immediately.
   st.auth_error = parseJ(getSetting('ig_auth_error') || '', null);
@@ -2215,6 +2411,14 @@ app.patch('/api/conversations/:id', requireAdmin, (req, res) => {
   res.json(shapeConv(getConv(conv.id)));
 });
 
+/** Owner-facing sentence for a parked send (shown as the inbox toast). */
+function parkedMessage(reason) {
+  if (reason === 'outside 24h window') return "Not sent: outside Instagram's 24 hour window. The lead has to message you first, or reply from the Instagram app.";
+  if (reason === 'instagram needs reconnect') return 'Not sent: Instagram needs reconnecting. Open Settings and reconnect Instagram.';
+  if (reason === 'instagram not connected') return 'Not sent: Instagram is not connected.';
+  return 'Not sent: ' + reason + '.';
+}
+
 /** Human manual send. Filters, delivers, resets AI-send counter, supersedes drafts. */
 app.post('/api/conversations/:id/send', requireAdmin, requireActive, async (req, res) => {
   const conv = getConv(req.params.id);
@@ -2222,7 +2426,11 @@ app.post('/api/conversations/:id/send', requireAdmin, requireActive, async (req,
   const text = String(req.body?.text || '').trim();
   if (!text) return res.status(400).json({ error: 'Empty message' });
   try {
-    const out = await deliver(conv, text, 'human');
+    // body.idempotency_key (optional): the inbox can pass one per composed
+    // message so a double click or a network retry never sends it twice.
+    const key = req.body?.idempotency_key ? 'human:' + conv.id + ':' + String(req.body.idempotency_key).slice(0, 100) : undefined;
+    const out = await deliver(conv, text, 'human', { idempotencyKey: key });
+    if (!out.ok && out.parked) return res.status(409).json({ error: parkedMessage(out.reason), reason: out.reason });
     if (!out.ok) return res.status(422).json({ error: 'Blocked by outbound filter', reason: out.reason });
     // Human took the wheel: guardrail counter resets, any AI draft is stale.
     db.prepare('UPDATE conversations SET consecutive_ai_sends = 0 WHERE id = ?').run(conv.id);
@@ -2287,6 +2495,7 @@ app.get('/api/drafts', requireAdmin, (req, res) => {
  * only a deliberate PATCH may set), and count this as an AI send toward the
  * autopilot guardrail. body.messages? lets the human edit before sending.
  */
+const draftSendKey = (draftId, i, text) => 'draft:' + draftId + ':' + i + ':' + sha(normForDedupe(text)).slice(0, 16);
 app.post('/api/drafts/:id/approve', requireAdmin, requireActive, async (req, res) => {
   const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(Number(req.params.id));
   if (!draft) return res.status(404).json({ error: 'Not found' });
@@ -2311,10 +2520,20 @@ app.post('/api/drafts/:id/approve', requireAdmin, requireActive, async (req, res
     }
   }
 
+  // 24h window: an old draft cannot be sent once the lead has been quiet for a
+  // day. Checked up front so nothing half-sends; the gate re-checks every message.
+  if (conv.channel === 'instagram' && !igWindowOpen(conv.last_lead_message_at)) {
+    setNeedsHuman(conv.id, 'outside 24h window');
+    return res.status(409).json({ error: parkedMessage('outside 24h window'), reason: 'outside 24h window' });
+  }
+
   try {
-    for (const m of messages) {
+    for (const [i, m] of messages.entries()) {
       // deliver() re-filters with the same regexes (pre-verified clean) — harmless.
-      const out = await deliver(conv, m, 'ai');
+      // The key ties each bubble to this draft, so approving again after a
+      // partial failure (or a double click) never resends a bubble that went out.
+      const out = await deliver(conv, m, 'ai', { idempotencyKey: draftSendKey(draft.id, i, m) });
+      if (!out.ok && out.parked) return res.status(409).json({ error: parkedMessage(out.reason), reason: out.reason });
       if (!out.ok) return res.status(422).json({ error: 'Blocked by outbound filter', reason: out.reason });
     }
     // Approved AI draft counts as one AI turn (regardless of split into 1-2 msgs).
@@ -2338,16 +2557,17 @@ app.post('/api/drafts/:id/approve', requireAdmin, requireActive, async (req, res
  */
 app.post('/api/drafts/send-all', requireAdmin, requireActive, async (req, res) => {
   // Oldest first: threads get their message in the order the AI queued them.
-  const pending = db.prepare(`SELECT * FROM drafts WHERE status = 'pending' ORDER BY id ASC`).all();
+  // Scoped to the caller's account: deliver() runs with this account's Instagram token.
+  const pending = db.prepare(`SELECT * FROM drafts WHERE status = 'pending' AND account_id = ? ORDER BY id ASC`).all(req.accountId);
   const regexes = parseJ(getSetting('outbound_filter_regexes'), []);
-  const summary = { sent: 0, window: 0, flagged: 0, blocked: 0, failed: 0 };
+  const summary = { sent: 0, window: 0, parked: 0, flagged: 0, blocked: 0, failed: 0 };
   for (const draft of pending) {
     if (draft.needs_human) { summary.flagged++; continue; }
     const conv = getConv(draft.conversation_id);
     const messages = conv
       ? parseJ(draft.messages_json, []).map((m) => String(m).trim()).filter(Boolean).slice(0, 2) : [];
     if (!messages.length) { summary.failed++; continue; }
-    if (conv.channel === 'instagram' && !withinMessagingWindow(conv)) { summary.window++; continue; }
+    if (conv.channel === 'instagram' && !igWindowOpen(conv.last_lead_message_at)) { summary.window++; continue; }
     // Filter ALL messages before delivering any (same reasoning as single approve:
     // a mid-loop block would half-send, and a retry would duplicate the sent half).
     if (messages.some((m) => !applyOutboundFilter(m, regexes).ok)) {
@@ -2356,12 +2576,12 @@ app.post('/api/drafts/send-all', requireAdmin, requireActive, async (req, res) =
       summary.blocked++; continue;
     }
     try {
-      let ok = true;
-      for (const m of messages) {
-        const out = await deliver(conv, m, 'ai');
-        if (!out || !out.ok) { ok = false; break; }
+      let ok = true, parked = false;
+      for (const [i, m] of messages.entries()) {
+        const out = await deliver(conv, m, 'ai', { idempotencyKey: draftSendKey(draft.id, i, m) });
+        if (!out || !out.ok) { ok = false; parked = !!(out && out.parked); break; }
       }
-      if (!ok) { summary.failed++; continue; }
+      if (!ok) { if (parked) summary.parked++; else summary.failed++; continue; }
       db.prepare('UPDATE conversations SET consecutive_ai_sends = consecutive_ai_sends + 1 WHERE id = ?').run(conv.id);
       if (draft.stage_suggestion && !HUMAN_CONFIRM_STAGES.has(draft.stage_suggestion) && STAGES.includes(draft.stage_suggestion)) {
         setStage(conv.id, draft.stage_suggestion);
@@ -2569,7 +2789,7 @@ app.post('/api/conversations/:id/lead-message', requireAdmin, (req, res) => {
 //   /?connected=1 (or /?connect_error=…). Needs IG_APP_ID + IG_APP_SECRET.
 const IG_REDIRECT = () => `${PUBLIC_URL()}/auth/instagram/callback`;
 app.get('/auth/instagram/start', requireAccount, (req, res) => {
-  if (!igOauthConfigured()) return res.status(503).type('html').send(legalPage('Instagram login not configured', [['Missing app credentials', 'IG_APP_ID and IG_APP_SECRET are not set on the server, so Instagram login is unavailable. The first account can still use the env token.']]));
+  if (!igOauthConfigured()) return res.status(503).type('html').send(legalPage('Instagram login not configured', [['Missing app credentials', 'IG_APP_ID and IG_APP_SECRET are not set on the server, so Instagram login is unavailable. The first account can still use the env token.']], { plain: true }));
   const state = crypto.randomBytes(24).toString('base64url');
   db.prepare('DELETE FROM oauth_states WHERE expires_at < ?').run(nowIso());
   db.prepare('INSERT INTO oauth_states (state, account_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)')
@@ -2643,30 +2863,16 @@ const igRefreshTimer = setInterval(() => refreshInstagramTokens().catch(() => {}
 if (igRefreshTimer.unref) igRefreshTimer.unref();
 
 // ---------- legal pages (required to publish the Meta app) ----------
-// Real, honest policy pages so the app can go Live. Generic by design — the
-// owner can edit the copy; they satisfy Meta's Privacy Policy / Data Deletion
-// requirements for an Instagram-messaging app.
-function legalPage(title, sections) {
-  const body = sections.map(([h, p]) => `<h2>${h}</h2><p>${p}</p>`).join('');
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>`
-    + `<style>body{font-family:Inter,system-ui,sans-serif;background:#171a21;color:#e9eaed;margin:0;padding:48px 20px;line-height:1.65}`
-    + `main{max-width:680px;margin:0 auto}h1{color:#f9fafa;font-size:26px;margin:0 0 6px}h2{color:#f9fafa;font-size:17px;margin:28px 0 6px}`
-    + `p{color:#a7abb4;margin:0}.upd{color:#7b8090;font-size:13px;margin-bottom:8px}a{color:#7c8cff}</style></head>`
-    + `<body><main><h1>${title}</h1><p class="upd">Last updated: 2026</p>${body}</main></body></html>`;
-}
-const CONTACT = 'Reply to the conversation on Instagram, or email the address listed on the associated Meta app.';
-app.get('/privacy', (req, res) => res.type('html').send(legalPage('Privacy Policy', [
-  ['What this service is', 'This tool helps the operator of a single Instagram business account read and respond to their own Instagram direct messages, using Meta&rsquo;s official Instagram Messaging API and AI-assisted reply drafting.'],
-  ['Information processed', 'Direct messages sent to the connected Instagram business account &mdash; message text, the sender&rsquo;s Instagram username and display name, and timestamps &mdash; accessed only through Meta&rsquo;s official Instagram Graph API with the account owner&rsquo;s authorization.'],
-  ['How it is used', 'To show conversations to the account owner and let them (or an AI assistant) draft and send replies. Message content may be sent to our AI provider (Anthropic) solely to generate reply drafts; it is not used to train models.'],
-  ['Sharing', 'We do not sell your data. It is processed only to operate this messaging tool. The third parties involved are Meta/Instagram (the messaging platform) and Anthropic (AI drafting).'],
-  ['Retention and deletion', 'Conversations are retained to provide message history. To request deletion of your data, see the Data Deletion instructions at /data-deletion. Data is also removed if the Instagram connection is disconnected.'],
-  ['Contact', CONTACT],
-])));
+// Privacy Policy, Terms and Data Deletion instructions live in lib/legal.js and
+// read the operator's details from env (COMPANY_NAME, COMPANY_EMAIL,
+// COMPANY_ADDRESS, COMPANY_NUMBER, COMPANY_ICO_NUMBER, HOSTING_PROVIDER).
+app.get('/privacy', (req, res) => res.type('html').send(privacyPage()));
+app.get('/terms', (req, res) => res.type('html').send(termsPage()));
+app.get('/data-deletion', (req, res) => res.type('html').send(dataDeletionPage(process.env, req.query.code)));
+
 /**
- * Meta's Data Deletion Request callback (G.2). Meta POSTs signed_request when an
- * Instagram user removes the app; we delete every conversation with that user id
- * across accounts and answer with a status URL + confirmation code, as Meta requires.
+ * Meta's signed_request (HMAC-SHA256 with the app secret, base64url payload).
+ * Returns the decoded payload or null when the signature does not verify.
  */
 function parseSignedRequest(sr, secret) {
   const [sig, payload] = String(sr || '').split('.', 2);
@@ -2676,36 +2882,80 @@ function parseSignedRequest(sr, secret) {
   if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return null;
   try { return JSON.parse(Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')); } catch { return null; }
 }
+
+const signedRequestData = (sr) => { for (const k of metaSecrets()) { const d = parseSignedRequest(sr, k); if (d) return d; } return null; };
+
+/**
+ * Erase what an Instagram user id covers. With Instagram Login the id Meta
+ * sends is the app user (the business account that authorised the app), so the
+ * matching Instagram connection is disconnected, its token erased, its
+ * automation paused and every Instagram conversation of that workspace deleted.
+ * A conversation whose lead has that id is deleted too. Returns counts.
+ */
+function eraseInstagramUser(uid) {
+  let conversations = 0, connections = 0;
+  tx(() => {
+    for (const c of db.prepare("SELECT id FROM conversations WHERE channel = 'instagram' AND external_id = ?").all(uid)) { purgeConversation(c.id); conversations++; }
+    for (const row of db.prepare('SELECT account_id FROM instagram_accounts WHERE business_id = ? OR app_scoped_id = ?').all(uid, uid)) {
+      for (const c of db.prepare("SELECT id FROM conversations WHERE channel = 'instagram' AND account_id = ?").all(row.account_id)) { purgeConversation(c.id); conversations++; }
+      db.prepare("UPDATE instagram_accounts SET token_enc = NULL, status = 'disconnected', updated_at = ? WHERE account_id = ?").run(nowIso(), row.account_id);
+      runAs(row.account_id, () => { setSetting('kill_switch', '1'); setSetting('ig_auth_error', ''); });
+      connections++;
+    }
+  });
+  return { conversations, connections };
+}
+
+/**
+ * Data Deletion Request callback (Meta App Dashboard, Data deletion request URL).
+ * Meta POSTs signed_request when a user removes the app or asks Meta to delete
+ * their data; we erase it and answer with a status URL and confirmation code.
+ */
 app.post('/webhook/meta/data-deletion', express.urlencoded({ extended: false }), (req, res) => {
-  const data = parseSignedRequest(req.body?.signed_request, process.env.IG_APP_SECRET);
+  const data = signedRequestData(req.body?.signed_request);
   if (!data || !data.user_id) return res.status(400).json({ error: 'bad signed_request' });
   const uid = String(data.user_id);
   const code = crypto.randomBytes(6).toString('hex');
-  const convs = db.prepare("SELECT id, account_id FROM conversations WHERE channel = 'instagram' AND external_id = ?").all(uid);
-  tx(() => {
-    for (const c of convs) {
-      db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(c.id);
-      db.prepare('DELETE FROM drafts WHERE conversation_id = ?').run(c.id);
-      db.prepare('DELETE FROM stage_events WHERE conversation_id = ?').run(c.id);
-      db.prepare('DELETE FROM conversations WHERE id = ?').run(c.id);
-    }
-  });
-  audit(FIRST_ACCOUNT_ID, null, 'meta-data-deletion', `user ${uid}: ${convs.length} conversation(s) removed, code ${code}`);
-  console.log(`[meta] data deletion for user: ${convs.length} conversation(s) removed (code ${code})`);
+  const n = eraseInstagramUser(uid);
+  audit(FIRST_ACCOUNT_ID, null, 'meta-data-deletion', `${n.connections} connection(s), ${n.conversations} conversation(s) removed, code ${code}`);
+  console.log(`[meta] data deletion: ${n.connections} connection(s), ${n.conversations} conversation(s) removed (code ${code})`);
   res.json({ url: `${PUBLIC_URL()}/data-deletion?code=${code}`, confirmation_code: code });
 });
-app.get('/data-deletion', (req, res) => res.type('html').send(legalPage('Data Deletion', [
-  ...(req.query.code ? [['Status of your request', `Deletion request ${String(req.query.code).replace(/[^a-f0-9]/gi, '').slice(0, 16)} has been completed. Your conversations with this Instagram account were removed.`]] : []),
-  ['Request deletion of your data', 'If you have messaged this Instagram business account and want your data removed, you can request deletion at any time.'],
-  ['How', 'Reply to the conversation on Instagram asking for your data to be deleted, or email the address listed on the associated Meta app. The account owner will remove your conversation and all associated data from the system.'],
-  ['Automatic removal', 'Your data is also removed if the account owner disconnects the Instagram integration.'],
-  ['Contact', CONTACT],
-])));
-app.get('/terms', (req, res) => res.type('html').send(legalPage('Terms of Service', [
-  ['Use of this service', 'This tool is operated by the owner of the connected Instagram business account for managing their own direct messages. It is provided on an as-is basis with no warranty.'],
-  ['Consent', 'By messaging the connected Instagram account, you consent to your messages being processed as described in the Privacy Policy at /privacy.'],
-  ['Contact', CONTACT],
-])));
+
+/**
+ * Deauthorize callback (Meta App Dashboard, Deauthorize callback URL). The
+ * business removed the app in Instagram: stop using its token at once and pause
+ * automation. Data is kept until the separate deletion request (or the owner
+ * deletes the workspace), as Meta's flow expects.
+ */
+app.post('/webhook/meta/deauthorize', express.urlencoded({ extended: false }), (req, res) => {
+  const data = signedRequestData(req.body?.signed_request);
+  if (!data || !data.user_id) return res.status(400).json({ error: 'bad signed_request' });
+  const uid = String(data.user_id);
+  let n = 0;
+  for (const row of db.prepare('SELECT account_id FROM instagram_accounts WHERE business_id = ? OR app_scoped_id = ?').all(uid, uid)) {
+    db.prepare("UPDATE instagram_accounts SET token_enc = NULL, status = 'disconnected', updated_at = ? WHERE account_id = ?").run(nowIso(), row.account_id);
+    runAs(row.account_id, () => setSetting('kill_switch', '1'));
+    audit(row.account_id, null, 'instagram-deauthorized', 'removed in Instagram');
+    n++;
+  }
+  console.log(`[meta] deauthorize: ${n} connection(s) disconnected`);
+  res.json({ ok: true });
+});
+
+/**
+ * Erase one conversation (a lead's deletion request). Owner only; the body must
+ * repeat the conversation id as confirmation.
+ */
+app.delete('/api/conversations/:id', requireAccount, requireOwner, (req, res) => {
+  const conv = getConv(req.params.id);
+  if (!conv) return res.status(404).json({ error: 'Not found' });
+  if (String(req.body?.confirm || '') !== conv.id) return res.status(400).json({ error: 'Send { confirm: "<conversation id>" } to delete this conversation' });
+  tx(() => purgeConversation(conv.id));
+  audit(req.accountId, req.user?.id || null, 'conversation-deleted', conv.id);
+  bumpEvent(req.accountId, 'conversation', conv.id);
+  res.json({ ok: true });
+});
 
 /**
  * Persist one inbound/echo message event: its text (if any) and each attachment.
@@ -2818,9 +3068,13 @@ app.get('/webhook/instagram', (req, res) => {
 // setup isn't blocked, but SETTING IG_APP_SECRET is strongly recommended — it's
 // what stops anyone on the internet POSTing forged events to this endpoint.
 let _igUnsignedWarned = false;
+// Meta signs webhooks and signed_requests with an app secret. An Instagram Login
+// app shows two (the Instagram app secret used for OAuth, and the Meta app
+// secret under App settings > Basic), so either one verifies.
+const metaSecrets = () => [process.env.IG_APP_SECRET, process.env.META_APP_SECRET].filter(Boolean);
 function verifyWebhookSignature(req) {
-  const secret = process.env.IG_APP_SECRET;
-  if (!secret) {
+  const secrets = metaSecrets();
+  if (!secrets.length) {
     // No app secret yet: the owner chose (2026-09-04) to keep DMs flowing rather
     // than reject unverified events, so accept them and warn — in the server log
     // and with a red notice on the Settings › Instagram card (signature_verified
@@ -2833,11 +3087,13 @@ function verifyWebhookSignature(req) {
     return true;
   }
   const header = String(req.headers['x-hub-signature-256'] || '');
-  const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(req.rawBody || Buffer.alloc(0)).digest('hex');
-  try {
-    const a = Buffer.from(header), b = Buffer.from(expected);
-    return a.length === b.length && crypto.timingSafeEqual(a, b);
-  } catch { return false; }
+  return secrets.some((secret) => {
+    const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(req.rawBody || Buffer.alloc(0)).digest('hex');
+    try {
+      const a = Buffer.from(header), b = Buffer.from(expected);
+      return a.length === b.length && crypto.timingSafeEqual(a, b);
+    } catch { return false; }
+  });
 }
 app.post('/webhook/instagram', async (req, res) => {
   if (!verifyWebhookSignature(req)) return res.sendStatus(403); // reject spoofed webhooks
@@ -2872,6 +3128,19 @@ app.post('/webhook/instagram', async (req, res) => {
       // first account only while it still runs on the env token.
       const accountId = accountForBusinessId(ev.businessId) || (process.env.IG_PAGE_TOKEN ? FIRST_ACCOUNT_ID : null);
       if (!accountId) { console.log('[webhook] event for an unknown Instagram account ignored'); continue; }
+      // Idempotency: claim the event id BEFORE any await. Meta redelivers a
+      // webhook it thinks we missed, sometimes concurrently; the second copy hits
+      // the primary key here and is dropped, so it can never store a duplicate
+      // message or trigger a second AI reply. Events without a mid (rare) are
+      // keyed on sender, recipient, timestamp and content.
+      const eventKey = ev.mid ? 'mid:' + ev.mid
+        : 'h:' + sha([ev.direction, ev.leadId, ev.businessId, ev.timestamp, ev.text, (ev.attachments || []).map((x) => x.url).join(',')].join('|'));
+      if (!db.prepare('INSERT OR IGNORE INTO ig_inbound_events (event_key, account_id, received_at) VALUES (?, ?, ?)').run(eventKey, accountId, nowIso()).changes) {
+        console.log('[webhook] duplicate event ignored');
+        continue;
+      }
+      let processed = false;
+      try {
       await runAs(accountId, async () => {
       if (!igConfigured()) return;   // disconnected account: keep nothing
       // The lead is the OTHER party in both directions — leadId already resolved it.
@@ -2887,10 +3156,17 @@ app.post('/webhook/instagram', async (req, res) => {
           }
         }).catch(() => {});
       }
+      // An echo can confirm a send whose outcome we lost (restart or network
+      // error mid-send): match it to the 'unknown'/'sending' row by text hash.
+      const echoOfOurs = ev.direction === 'out' && ev.text ? confirmUnknownSend(conv.id, ev.text, ev.mid) : null;
       // Persist text + attachments (images inline; voice notes downloaded + transcribed).
       await ingestMessage(conv, ev);
+      processed = true;
       if (ev.direction === 'out') {
-        if ((inFlightSends.get(String(ev.leadId)) || 0) > Date.now()) {
+        if (echoOfOurs) {
+          // One of our own sends: label automated ones 'ai'; the counter is handled by the send path.
+          if (ev.mid && !echoOfOurs.human) db.prepare("UPDATE messages SET source = 'ai' WHERE mid = ? AND source = 'human'").run(ev.mid);
+        } else if ((inFlightSends.get(String(ev.leadId)) || 0) > Date.now()) {
           // Echo of OUR OWN in-flight AI send that beat the Send API response:
           // correct its source and leave the autopilot counter alone.
           if (ev.mid) db.prepare("UPDATE messages SET source = 'ai' WHERE mid = ? AND source = 'human'").run(ev.mid);
@@ -2899,11 +3175,16 @@ app.post('/webhook/instagram', async (req, res) => {
           db.prepare('UPDATE conversations SET consecutive_ai_sends = 0 WHERE id = ?').run(conv.id);
         }
       } else {
-        onLeadMessage(conv.id);
+        onLeadMessage(conv.id, ev.timestamp);
         await maybeFireVoiceNote(conv, ev.text); // Audio Arsenal: the LEAD's keyword can fire a voice note too
         scheduler.onInboundLead(conv.id); // autopilot/copilot turn (mode-aware)
       }
       });
+      } catch (e) {
+        // Nothing stored yet: release the claim so Meta's retry can deliver it.
+        if (!processed) db.prepare('DELETE FROM ig_inbound_events WHERE event_key = ?').run(eventKey);
+        throw e;
+      }
     } catch (e) { console.error('ig webhook event error:', e.message); }
   }
 });
