@@ -23,6 +23,8 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'dmsetter-meta-'));
 const SECRET = 'test-app-secret';
 const BIZ = '17841400000000999';
+const PAGE = '102000000000777';        // Facebook Page (Messenger) on the env token
+const PAGE2 = '102000000000888';       // a Page connected through Settings
 const PIN = { 'x-admin-pin': '4242', 'Content-Type': 'application/json' };
 const H = 3600_000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -49,6 +51,14 @@ const graph = http.createServer((req, res) => {
       return json(200, { recipient_id: rid, message_id: 'out_' + (++n) });
     }
     if (req.method === 'GET' && url.pathname === '/' + BIZ) return json(200, { id: BIZ, username: 'test_business' });
+    if (req.method === 'GET' && url.pathname === '/' + PAGE) return json(200, { id: PAGE, name: 'Test Page' });
+    if (req.method === 'GET' && url.pathname === '/' + PAGE2) {
+      return url.searchParams.get('access_token') === 'good-page-token-0123456789'
+        ? json(200, { id: PAGE2, name: 'Second Page' })
+        : json(400, { error: { message: 'Invalid OAuth access token.', type: 'OAuthException', code: 190 } });
+    }
+    if (req.method === 'POST' && /^\/\d+\/subscribed_apps$/.test(url.pathname)) return json(200, { success: true });
+    if (req.method === 'GET' && url.pathname === '/P_named') return json(200, { first_name: 'Ada', last_name: 'Lovelace' });
     if (req.method === 'GET') return json(200, {});
     json(404, { error: { message: 'unknown', code: 100 } });
   });
@@ -60,7 +70,7 @@ const GRAPH_PORT = graph.address().port;
 const logLines = [];
 const env = {
   ...process.env, PORT: String(PORT), DATA_DIR: DATA, OWNER_EMAIL: 'owner@example.test', ADMIN_PIN: '4242', ALLOW_LEGACY_PIN: '1',
-  IG_GRAPH_BASE: `http://127.0.0.1:${GRAPH_PORT}`, IG_PAGE_TOKEN: 'stub-token', IG_BUSINESS_ID: BIZ, IG_VERIFY_TOKEN: 'verify-me',
+  IG_GRAPH_BASE: `http://127.0.0.1:${GRAPH_PORT}`, FB_GRAPH_BASE: `http://127.0.0.1:${GRAPH_PORT}`, FB_PAGE_ID: PAGE, FB_PAGE_TOKEN: 'stub-page-token', IG_PAGE_TOKEN: 'stub-token', IG_BUSINESS_ID: BIZ, IG_VERIFY_TOKEN: 'verify-me',
   IG_APP_SECRET: SECRET, META_APP_SECRET: 'meta-dashboard-secret', IG_APP_ID: '', ANTHROPIC_API_KEY: '', RESEND_API_KEY: '', SENTRY_DSN: '', BACKUP_S3_BUCKET: '', GROQ_API_KEY: '', OPENAI_API_KEY: '',
   FAST_TIMERS: '1', IG_RATE_MIN_INTERVAL_MS: '150', IG_RATE_BACKOFF_MS: '400', PUBLIC_BASE_URL: 'http://127.0.0.1:' + PORT,
   COMPANY_NAME: 'Test Coaching Ltd', COMPANY_EMAIL: 'privacy@example.test', COMPANY_ADDRESS: '', COMPANY_NUMBER: '00000001',
@@ -311,6 +321,77 @@ try {
     assert.equal(db.prepare("SELECT source FROM messages WHERE mid = 'echo_lost'").get().source, 'ai');
   });
 
+  // ---- Messenger (Facebook Page) ---------------------------------------------------------
+  const fbEvent = (lead, mid, text, { ts = Date.now(), echo = false, page = PAGE } = {}) => ({
+    object: 'page',
+    entry: [{ id: page, time: Date.now(), messaging: [echo
+      ? { sender: { id: page }, recipient: { id: lead }, timestamp: ts, message: { mid, text, is_echo: true } }
+      : { sender: { id: lead }, recipient: { id: page }, timestamp: ts, message: { mid, text } }] }],
+  });
+  async function fbWebhook(payload, { signed = true } = {}) {
+    const raw = JSON.stringify(payload);
+    const r = await fetch(BASE + '/webhook/messenger', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(signed ? { 'x-hub-signature-256': sign(raw) } : {}) }, body: raw });
+    return r.status;
+  }
+  const fbConv = (lead) => db.prepare("SELECT * FROM conversations WHERE channel = 'messenger' AND external_id = ?").get(lead);
+  await test('messenger: webhook verification handshake uses the verify token', async () => {
+    const ok = await fetch(BASE + '/webhook/messenger?hub.mode=subscribe&hub.verify_token=verify-me&hub.challenge=abc123');
+    assert.equal(ok.status, 200); assert.equal(await ok.text(), 'abc123');
+    assert.equal((await fetch(BASE + '/webhook/messenger?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=x')).status, 403);
+  });
+  await test('messenger: an unsigned webhook is rejected', async () => {
+    assert.equal(await fbWebhook(fbEvent('P_x', 'm_fb_bad', 'hi'), { signed: false }), 403);
+    await sleep(150); assert.equal(fbConv('P_x'), undefined);
+  });
+  await test('messenger: a lead message creates a Messenger conversation named from the profile, delivered twice stores once', async () => {
+    const p = fbEvent('P_named', 'm_fb_1', 'hey, is this still available?');
+    await Promise.all([fbWebhook(p), fbWebhook(p)]);
+    const c = await until(() => { const x = fbConv('P_named'); return x && x.display_name ? x : null; });
+    assert.ok(c, 'conversation created'); assert.equal(c.display_name, 'Ada Lovelace'); assert.equal(c.account_id, 'acc_1');
+    assert.ok(c.last_lead_message_at, 'window opened');
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM messages WHERE conversation_id = ?').get(c.id).n, 1);
+    assert.equal(conv('P_named'), undefined, 'not an Instagram conversation');
+  });
+  await test('messenger: manual send goes to the Page Send API as a RESPONSE, and its echo is not stored twice', async () => {
+    const c = fbConv('P_named'); const before = sendsTo('P_named').length;
+    const r = await api('POST', `/api/conversations/${c.id}/send`, { text: 'Yes it is! What are you after?' });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    const mine = sendsTo('P_named').slice(before); assert.equal(mine.length, 1);
+    assert.equal(mine[0].body.messaging_type, 'RESPONSE'); assert.equal(mine[0].body.tag, undefined);
+    const row = db.prepare("SELECT mid FROM outbound_sends WHERE conversation_id = ? AND state = 'sent'").get(c.id); assert.ok(row?.mid);
+    await fbWebhook(fbEvent('P_named', row.mid, 'Yes it is! What are you after?', { echo: true })); await sleep(250);
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM messages WHERE mid = ?').get(row.mid).n, 1);
+  });
+  await test('messenger: an owner reply typed in the Page inbox is stored as a human setter message, nothing sent', async () => {
+    const c = fbConv('P_named'); const before = sends.length;
+    await fbWebhook(fbEvent('P_named', 'm_fb_echo_phone', 'typed in Business Suite', { echo: true }));
+    const m = await until(() => db.prepare("SELECT role, source FROM messages WHERE mid = 'm_fb_echo_phone'").get());
+    assert.deepEqual({ ...m }, { role: 'setter', source: 'human' }); assert.equal(sends.length, before);
+    assert.ok(c);
+  });
+  await test('messenger: outside the 24h window a send is refused and nothing goes out', async () => {
+    await fbWebhook(fbEvent('P_late', 'm_fb_late', 'hello'));
+    const c = await until(() => { const x = fbConv('P_late'); return x && x.last_lead_message_at ? x : null; });
+    db.prepare('UPDATE conversations SET last_lead_message_at = ? WHERE id = ?').run(new Date(Date.now() - 30 * H).toISOString(), c.id);
+    const before = sends.length;
+    const r = await api('POST', `/api/conversations/${c.id}/send`, { text: 'still there?' });
+    assert.equal(r.status, 409); assert.equal(r.json.reason, 'outside 24h window'); assert.equal(sends.length, before);
+  });
+  await test('messenger: events for an unknown Page are ignored', async () => {
+    await fbWebhook(fbEvent('P_stranger', 'm_fb_unknown', 'hi', { page: '999999999999' })); await sleep(200);
+    assert.equal(fbConv('P_stranger'), undefined);
+  });
+  await test('messenger: connecting a Page checks the token with Facebook and stores it encrypted', async () => {
+    const bad = await api('POST', '/api/messenger/connect', { page_id: PAGE2, token: 'not-the-right-token-xxxxxxxx' });
+    assert.equal(bad.status, 400);
+    const ok = await api('POST', '/api/messenger/connect', { page_id: PAGE2, token: 'good-page-token-0123456789' });
+    assert.equal(ok.status, 200, JSON.stringify(ok.json)); assert.equal(ok.json.page.name, 'Second Page'); assert.equal(ok.json.webhook_subscribed, true);
+    const row = db.prepare("SELECT * FROM messenger_pages WHERE account_id = 'acc_1'").get();
+    assert.equal(row.page_id, PAGE2); assert.ok(row.token_enc && !row.token_enc.includes('good-page-token'), 'token stored encrypted');
+    const me = await api('GET', '/api/messenger/status');
+    assert.equal(me.status, 200); assert.equal(me.json.connected, true); assert.match(me.json.webhook_url, /\/webhook\/messenger$/);
+  });
+
   // ---- legal pages and Meta callbacks ---------------------------------------------------
   await test('privacy, terms and data deletion pages are public and carry the company details', async () => {
     const p = await (await fetch(BASE + '/privacy')).text();
@@ -339,7 +420,9 @@ try {
     const r = await fetch(BASE + '/webhook/meta/data-deletion', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'signed_request=' + signedRequest({ user_id: BIZ, algorithm: 'HMAC-SHA256' }) });
     assert.equal(r.status, 200); const j = await r.json(); assert.ok(j.confirmation_code && j.url.includes('/data-deletion?code='));
     assert.equal(db.prepare("SELECT COUNT(*) n FROM conversations WHERE channel = 'instagram'").get().n, 0);
-    assert.equal(db.prepare('SELECT COUNT(*) n FROM outbound_sends').get().n, 0);
+    // Instagram sends are gone; the Messenger conversations (another channel) are untouched.
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM outbound_sends WHERE conversation_id NOT IN (SELECT id FROM conversations WHERE channel = 'messenger')").get().n, 0);
+    assert.ok(db.prepare("SELECT COUNT(*) n FROM conversations WHERE channel = 'messenger'").get().n > 0);
   });
 } catch (e) {
   failed++; console.log('  FAIL setup: ' + (e.stack || e.message) + '\n' + logLines.slice(-20).join('\n'));
