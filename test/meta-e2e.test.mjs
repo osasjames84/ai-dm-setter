@@ -61,7 +61,7 @@ const logLines = [];
 const env = {
   ...process.env, PORT: String(PORT), DATA_DIR: DATA, OWNER_EMAIL: 'owner@example.test', ADMIN_PIN: '4242',
   IG_GRAPH_BASE: `http://127.0.0.1:${GRAPH_PORT}`, IG_PAGE_TOKEN: 'stub-token', IG_BUSINESS_ID: BIZ, IG_VERIFY_TOKEN: 'verify-me',
-  IG_APP_SECRET: SECRET, IG_APP_ID: '', ANTHROPIC_API_KEY: '', RESEND_API_KEY: '', SENTRY_DSN: '', BACKUP_S3_BUCKET: '', GROQ_API_KEY: '', OPENAI_API_KEY: '',
+  IG_APP_SECRET: SECRET, META_APP_SECRET: 'meta-dashboard-secret', IG_APP_ID: '', ANTHROPIC_API_KEY: '', RESEND_API_KEY: '', SENTRY_DSN: '', BACKUP_S3_BUCKET: '', GROQ_API_KEY: '', OPENAI_API_KEY: '',
   FAST_TIMERS: '1', IG_RATE_MIN_INTERVAL_MS: '40', IG_RATE_BACKOFF_MS: '400', PUBLIC_BASE_URL: 'http://127.0.0.1:' + PORT,
   COMPANY_NAME: 'Test Coaching Ltd', COMPANY_EMAIL: 'privacy@example.test', COMPANY_ADDRESS: '', COMPANY_NUMBER: '00000001',
 };
@@ -100,7 +100,8 @@ const conv = (lead) => db.prepare("SELECT * FROM conversations WHERE channel = '
 async function until(fn, ms = 4000) { const end = Date.now() + ms; while (Date.now() < end) { const v = fn(); if (v) return v; await sleep(50); } return fn(); }
 async function lead(id, text = 'hi there', opts = {}) {
   await webhook(msgEvent(id, 'mid_' + id + '_' + crypto.randomBytes(3).toString('hex'), text, opts));
-  return until(() => conv(id));
+  // Wait until the webhook has fully landed (the window stamp is the last write).
+  return until(() => { const c = conv(id); return c && c.last_lead_message_at ? c : null; });
 }
 const insertDraft = (c, msgs) => Number(db.prepare("INSERT INTO drafts (conversation_id, messages_json, needs_human, reason, status, created_at, account_id) VALUES (?, ?, 0, '', 'pending', ?, 'acc_1')")
   .run(c.id, JSON.stringify(msgs), new Date().toISOString()).lastInsertRowid);
@@ -117,6 +118,11 @@ try {
   // ---- inbound: signatures, dedupe, echoes, read events -----------------------
   await test('webhook rejects a bad signature', async () => {
     assert.equal(await webhook(msgEvent('L_x', 'm_bad', 'hi'), { signed: false }), 403);
+  });
+  await test('webhook signed with the Meta app secret (App settings > Basic) is accepted too', async () => {
+    const raw = JSON.stringify(msgEvent('L_sig', 'm_sig', 'hello'));
+    const r = await fetch(BASE + '/webhook/instagram', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-hub-signature-256': 'sha256=' + crypto.createHmac('sha256', 'meta-dashboard-secret').update(raw).digest('hex') }, body: raw });
+    assert.equal(r.status, 200);
   });
   await test('a webhook delivered three times (two at once) stores one message', async () => {
     const p = msgEvent('L1', 'mid_dup_1', 'hello, I want to get lean');
@@ -299,7 +305,8 @@ try {
     await sleep(1500); // boot rescue window (FAST_TIMERS)
     assert.equal(sends.length, before, 'nothing fired after the restart');
     await webhook(msgEvent('L1', 'echo_lost', 'Lost in the restart.', { echo: true }));
-    await until(() => db.prepare("SELECT state FROM outbound_sends WHERE idem_key = 'k-restart'").get().state === 'sent');
+    await until(() => db.prepare("SELECT state FROM outbound_sends WHERE idem_key = 'k-restart'").get().state === 'sent'
+      && db.prepare("SELECT source FROM messages WHERE mid = 'echo_lost'").get()?.source === 'ai');
     assert.equal(conv('L1').needs_human, 0, 'flag lifted once Instagram confirmed it');
     assert.equal(db.prepare("SELECT source FROM messages WHERE mid = 'echo_lost'").get().source, 'ai');
   });

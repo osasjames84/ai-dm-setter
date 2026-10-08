@@ -2721,6 +2721,8 @@ function parseSignedRequest(sr, secret) {
   try { return JSON.parse(Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')); } catch { return null; }
 }
 
+const signedRequestData = (sr) => { for (const k of metaSecrets()) { const d = parseSignedRequest(sr, k); if (d) return d; } return null; };
+
 /**
  * Erase what an Instagram user id covers. With Instagram Login the id Meta
  * sends is the app user (the business account that authorised the app), so the
@@ -2748,7 +2750,7 @@ function eraseInstagramUser(uid) {
  * their data; we erase it and answer with a status URL and confirmation code.
  */
 app.post('/webhook/meta/data-deletion', express.urlencoded({ extended: false }), (req, res) => {
-  const data = parseSignedRequest(req.body?.signed_request, process.env.IG_APP_SECRET);
+  const data = signedRequestData(req.body?.signed_request);
   if (!data || !data.user_id) return res.status(400).json({ error: 'bad signed_request' });
   const uid = String(data.user_id);
   const code = crypto.randomBytes(6).toString('hex');
@@ -2765,7 +2767,7 @@ app.post('/webhook/meta/data-deletion', express.urlencoded({ extended: false }),
  * deletes the workspace), as Meta's flow expects.
  */
 app.post('/webhook/meta/deauthorize', express.urlencoded({ extended: false }), (req, res) => {
-  const data = parseSignedRequest(req.body?.signed_request, process.env.IG_APP_SECRET);
+  const data = signedRequestData(req.body?.signed_request);
   if (!data || !data.user_id) return res.status(400).json({ error: 'bad signed_request' });
   const uid = String(data.user_id);
   let n = 0;
@@ -2904,9 +2906,13 @@ app.get('/webhook/instagram', (req, res) => {
 // setup isn't blocked, but SETTING IG_APP_SECRET is strongly recommended — it's
 // what stops anyone on the internet POSTing forged events to this endpoint.
 let _igUnsignedWarned = false;
+// Meta signs webhooks and signed_requests with an app secret. An Instagram Login
+// app shows two (the Instagram app secret used for OAuth, and the Meta app
+// secret under App settings > Basic), so either one verifies.
+const metaSecrets = () => [process.env.IG_APP_SECRET, process.env.META_APP_SECRET].filter(Boolean);
 function verifyWebhookSignature(req) {
-  const secret = process.env.IG_APP_SECRET;
-  if (!secret) {
+  const secrets = metaSecrets();
+  if (!secrets.length) {
     // No app secret yet: the owner chose (2026-09-04) to keep DMs flowing rather
     // than reject unverified events, so accept them and warn — in the server log
     // and with a red notice on the Settings › Instagram card (signature_verified
@@ -2919,11 +2925,13 @@ function verifyWebhookSignature(req) {
     return true;
   }
   const header = String(req.headers['x-hub-signature-256'] || '');
-  const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(req.rawBody || Buffer.alloc(0)).digest('hex');
-  try {
-    const a = Buffer.from(header), b = Buffer.from(expected);
-    return a.length === b.length && crypto.timingSafeEqual(a, b);
-  } catch { return false; }
+  return secrets.some((secret) => {
+    const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(req.rawBody || Buffer.alloc(0)).digest('hex');
+    try {
+      const a = Buffer.from(header), b = Buffer.from(expected);
+      return a.length === b.length && crypto.timingSafeEqual(a, b);
+    } catch { return false; }
+  });
 }
 app.post('/webhook/instagram', async (req, res) => {
   if (!verifyWebhookSignature(req)) return res.sendStatus(403); // reject spoofed webhooks
