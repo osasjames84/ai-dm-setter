@@ -54,13 +54,12 @@ Messenger (Facebook Page, same Meta app):
 
 Messenger setup: add the Messenger product to the Meta app, request `pages_messaging`, set the webhook callback to `<PUBLIC_BASE_URL>/webhook/messenger` with the verify token, and subscribe the Page to `messages` and `message_echoes` (connecting in Settings subscribes it automatically). Webhooks are verified with `IG_APP_SECRET` or `META_APP_SECRET`, exactly like Instagram's. Messenger sends share Instagram's gate: the 24h window, the pause on reconnect and the send limits below.
 
-Send limits (defaults shown; per workspace settings `rate_min_interval_sec`, `rate_max_per_hour`, `rate_max_per_lead_hour`, `stale_send_minutes` can tighten them, never past 1s spacing, 200 an hour, 30 per lead an hour):
+Send limits (defaults shown; per workspace settings `rate_min_interval_sec`, `rate_max_per_hour`, `stale_send_minutes` can tighten them, never past 1s spacing, 200 an hour):
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `IG_RATE_MIN_INTERVAL_MS` | 2000 | minimum gap between two sends from one account |
 | `IG_RATE_MAX_PER_HOUR` | 100 | sends per account per hour |
-| `IG_RATE_MAX_PER_LEAD_HOUR` | 10 | automated sends to one lead per hour (owner's manual sends are exempt) |
 | `IG_RATE_MAX_QUEUE_WAIT_MS` | 60000 | a send that would wait longer than this for its slot is held for review |
 | `IG_RATE_BACKOFF_MS` | 60000 | first back-off after a Meta rate-limit error (doubles, max 1 hour) |
 | `IG_STALE_SEND_MINUTES` | 30 | queued work older than this after downtime is parked, not sent |

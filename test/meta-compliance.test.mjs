@@ -124,21 +124,17 @@ await test('per account hourly cap', async () => {
   assert.equal(e.park, true); assert.equal(calls.length, 3);
   delete process.env.IG_RATE_MAX_PER_HOUR;
 });
-await test('per lead hourly cap applies to automated sends, not to the owner', async () => {
-  reset(); process.env.IG_RATE_MAX_PER_LEAD_HOUR = '2';
-  await igSendText('fresh', 'a'); await igSendText('fresh', 'b', { source: 'followup' });
-  await expectSendError(igSendText('fresh', 'c'), 'lead_cap');
-  await igSendText('fresh', 'owner typed this', { source: 'human' });
-  assert.equal(calls.length, 3);
-  delete process.env.IG_RATE_MAX_PER_LEAD_HOUR;
+await test('no per lead cap: many automated sends to one lead all go out', async () => {
+  reset();
+  for (let i = 0; i < 15; i++) await igSendText('fresh', 'm' + i, { source: i % 2 ? 'followup' : 'ai' });
+  assert.equal(calls.length, 15);
 });
 await test('account settings can tighten limits but not loosen them past the safe ceiling', () => {
-  policy = { minIntervalMs: 10, maxPerHour: 5000, maxPerLeadHour: 999 };
+  policy = { minIntervalMs: 10, maxPerHour: 5000 };
   const p = sendPolicy();
-  assert.equal(p.minIntervalMs, 1000); assert.equal(p.maxPerHour, 200); assert.equal(p.maxPerLeadHour, 30);
+  assert.equal(p.minIntervalMs, 1000); assert.equal(p.maxPerHour, 200);
   policy = { maxPerHour: 20 }; assert.equal(sendPolicy().maxPerHour, 20);
   policy = {};
-  const d = sendPolicy(); assert.equal(d.maxPerLeadHour, 10);
 });
 
 // ---- Meta error codes --------------------------------------------------------
@@ -292,7 +288,7 @@ await test('stale limit comes from settings, then env, then 30 minutes', () => {
   process.env.IG_STALE_SEND_MINUTES = '12'; assert.equal(staleAfterMs({}), 12 * 60_000); delete process.env.IG_STALE_SEND_MINUTES;
 });
 await test('a parked send from the gate consumes the step and keeps autopilot (no retry storm)', async () => {
-  const { deps, log, convs } = fakeDeps({ settings: seqSettings(10), deliverResult: { ok: false, parked: true, reason: 'per lead hourly limit reached, review before sending' } });
+  const { deps, log, convs } = fakeDeps({ settings: seqSettings(10), deliverResult: { ok: false, parked: true, reason: 'hourly send limit reached, review before sending' } });
   convs.set('c1', { id: 'c1', account_id: 'a', channel: 'instagram', stage: 'lead', mode: 'autopilot', followup_count: 0, last_message_at: ago(15 * 60_000), last_lead_message_at: ago(H) });
   const s = createScheduler(deps);
   await s.followupSweep();

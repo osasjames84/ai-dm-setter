@@ -268,10 +268,9 @@ const SETTING_DEFAULTS = {
 
   // ---- Instagram send limits (blank = operator default from env) ----
   // The outbound gate in lib/instagram.js clamps these to safe bounds: spacing
-  // at least 1s, at most 200 sends an hour, at most 30 automated sends per lead an hour.
+  // at least 1s, at most 200 sends an hour.
   rate_min_interval_sec: '',        // seconds between two sends from this account (default 2)
   rate_max_per_hour: '',            // sends per hour for this account (default 100)
-  rate_max_per_lead_hour: '',       // automated sends per lead per hour (default 10)
   stale_send_minutes: '',           // queued work older than this is parked for review, not sent (default 30)
 
   // ---- System state (not user-editable via the Settings form) ----
@@ -592,7 +591,6 @@ setSendPolicyResolver(() => {
   return {
     minIntervalMs: getSetting('rate_min_interval_sec') && Number.isFinite(sec) ? sec * 1000 : '',
     maxPerHour: getSetting('rate_max_per_hour') || '',
-    maxPerLeadHour: getSetting('rate_max_per_lead_hour') || '',
   };
 });
 /** Why sending is paused for this account ('instagram needs reconnect'), or null. */
