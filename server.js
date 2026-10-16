@@ -796,6 +796,12 @@ try {
 } catch (e) { console.error('[migrate] default-off backfill failed:', e.message); }
 
 const IS_PROD = !!process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV === 'production';
+// FAST_TIMERS is for the test suites only: it drops the 15s autopilot floor and
+// turns follow-up hours into seconds. Production ignores it.
+if (IS_PROD && process.env.FAST_TIMERS === '1') {
+  console.error('[boot] FAST_TIMERS is set in production: ignoring it (test-only setting)');
+  delete process.env.FAST_TIMERS;
+}
 // Legacy PIN header (x-admin-pin → first account). Off for release: it only
 // authenticates when ALLOW_LEGACY_PIN=1 is set, and then production must not
 // run on the default PIN. With the PIN off, ADMIN_PIN is not needed at all.
@@ -3007,7 +3013,9 @@ app.post('/api/messenger/disconnect', requireAccount, requireOwner, (req, res) =
 
 // Token refresh: Instagram long-lived tokens last 60 days and can be refreshed
 // once they are older than a day. Daily pass: refresh anything expiring within
-// 10 days; a failure marks the account needs_reconnect (the UI shows a banner).
+// 10 days. A failed refresh is retried on the next pass while the token still has
+// more than 2 days left (a network blip must not pause sending); after that the
+// account is marked needs_reconnect (the UI shows a banner) and the owner is emailed.
 async function refreshInstagramTokens() {
   if (!igOauthConfigured()) return;
   const soon = new Date(Date.now() + 10 * 86400_000).toISOString();
@@ -3022,6 +3030,12 @@ async function refreshInstagramTokens() {
         .run(encrypt(got.token), got.expiresAt, nowIso(), nowIso(), row.account_id);
       console.log(`[instagram] refreshed token for ${row.account_id} (expires ${got.expiresAt.slice(0, 10)})`);
     } catch (e) {
+      const t = Date.parse(row.expires_at || '');
+      if (Number.isFinite(t) && t - Date.now() > 2 * 86400_000) {
+        db.prepare('UPDATE instagram_accounts SET last_error = ?, updated_at = ? WHERE account_id = ?').run(e.message.slice(0, 200), nowIso(), row.account_id);
+        console.error(`[instagram] token refresh failed for ${row.account_id}, retrying tomorrow: ${e.message}`);
+        continue;
+      }
       db.prepare("UPDATE instagram_accounts SET status = 'needs_reconnect', last_error = ?, updated_at = ? WHERE account_id = ?").run(e.message.slice(0, 200), nowIso(), row.account_id);
       console.error(`[instagram] token refresh failed for ${row.account_id}: ${e.message}`);
       runAs(row.account_id, () => notify('Instagram needs reconnecting', 'The Instagram token could not be refreshed. Open Settings and reconnect Instagram.').catch(() => {}));
@@ -3038,7 +3052,9 @@ if (igRefreshTimer.unref) igRefreshTimer.unref();
 // COMPANY_ADDRESS, COMPANY_NUMBER, COMPANY_ICO_NUMBER, HOSTING_PROVIDER).
 app.get('/privacy', (req, res) => res.type('html').send(privacyPage()));
 app.get('/terms', (req, res) => res.type('html').send(termsPage()));
-app.get('/data-deletion', (req, res) => res.type('html').send(dataDeletionPage(process.env, req.query.code)));
+// The status shown for ?code= comes from the audit row the deletion callback wrote.
+const deletionCompletedAt = (code) => db.prepare("SELECT at FROM account_audit WHERE action = 'meta-data-deletion' AND detail LIKE ? ORDER BY id DESC LIMIT 1").get('%code ' + code)?.at || null;
+app.get('/data-deletion', (req, res) => res.type('html').send(dataDeletionPage(process.env, req.query.code, deletionCompletedAt)));
 
 /**
  * Meta's signed_request (HMAC-SHA256 with the app secret, base64url payload).

@@ -424,6 +424,19 @@ try {
     assert.equal(db.prepare("SELECT COUNT(*) n FROM outbound_sends WHERE conversation_id NOT IN (SELECT id FROM conversations WHERE channel = 'messenger')").get().n, 0);
     assert.ok(db.prepare("SELECT COUNT(*) n FROM conversations WHERE channel = 'messenger'").get().n > 0);
   });
+  await test('deletion status page confirms a real code and rejects an unknown one', async () => {
+    const r = await fetch(BASE + '/webhook/meta/data-deletion', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'signed_request=' + signedRequest({ user_id: 'nobody-' + Date.now(), algorithm: 'HMAC-SHA256' }) });
+    const { url, confirmation_code: code } = await r.json();
+    const real = await (await fetch(url)).text();
+    assert.ok(real.includes(code + '</b> was completed on'), 'real code shows completed');
+    const fake = await (await fetch(BASE + '/data-deletion?code=deadbeef')).text();
+    assert.ok(fake.includes('no deletion request with the code <b>deadbeef'), 'unknown code is not reported as completed');
+  });
+  await test('instagram webhook verification handshake uses the verify token', async () => {
+    const ok = await fetch(BASE + '/webhook/instagram?hub.mode=subscribe&hub.verify_token=verify-me&hub.challenge=ig123');
+    assert.equal(ok.status, 200); assert.equal(await ok.text(), 'ig123');
+    assert.equal((await fetch(BASE + '/webhook/instagram?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=x')).status, 403);
+  });
 } catch (e) {
   failed++; console.log('  FAIL setup: ' + (e.stack || e.message) + '\n' + logLines.slice(-20).join('\n'));
 } finally {

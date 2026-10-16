@@ -9,7 +9,7 @@ dmSetter uses the **Instagram API with Instagram Login** (graph.instagram.com). 
 | `instagram_business_basic` | Read the connected professional account's id and username, so the inbox shows which account is connected and webhooks are routed to the right workspace. |
 | `instagram_business_manage_messages` | Receive the direct messages people send to the business (webhook field `messages`) and send the business's replies. |
 
-It does **not** use Facebook Login, Facebook Pages or the Messenger Platform, so the old Facebook Login permissions (`instagram_manage_messages`, `pages_manage_metadata`, `pages_show_list`, `pages_messaging`) are not requested and must not be added. It also does **not** use the Human Agent feature or any message tag: every send happens inside Instagram's 24 hour standard messaging window, and only to people who messaged the business first. The code enforces this in one place (`outboundGate` in `lib/instagram.js`), so mention it confidently in the review.
+The Instagram side does **not** use Facebook Login, so the old Facebook Login permissions (`instagram_manage_messages`, `pages_manage_metadata`, `pages_show_list`) are not requested and must not be added. dmSetter also has an optional Facebook Messenger channel (Settings, Account, Connect Messenger, using a Facebook Page access token). That needs `pages_messaging`, which is a separate review: keep it out of this Instagram submission and out of the screencasts. It also does **not** use the Human Agent feature or any message tag: every send happens inside Instagram's 24 hour standard messaging window, and only to people who messaged the business first. The code enforces this in one place (`outboundGate` in `lib/instagram.js`), so mention it confidently in the review.
 
 Order of work:
 
@@ -127,7 +127,7 @@ What you need:
 
 Steps:
 
-1. Rename the business portfolio to the exact legal name, for example `Lean Is Law Ltd`. Spelling, punctuation and the `Ltd` suffix must match the certificate.
+1. Rename the business portfolio to the exact legal name, for example `JD Osas Ltd`. Spelling, punctuation and the `Ltd` suffix must match the certificate.
 2. Meta Business Suite, **Settings** (business settings), **Business info**: fill in legal name, registered address, phone, website.
 3. **Security Centre** (or the **Business verification** prompt in the app dashboard under App settings, Basic): **Start verification**.
 4. Choose United Kingdom, enter the company number if asked, upload the certificate, then confirm by domain email or phone.
@@ -163,7 +163,7 @@ Open **App Review**, **Permissions and features**. For each of the two permissio
 
 > dmSetter shows the direct messages that people send to the business's own Instagram professional account in a shared inbox, and lets the business reply. For each incoming message (webhook field "messages") the app can prepare a suggested reply with AI, which the business owner reviews and approves, or which is sent automatically if the owner has turned that on for the conversation. All replies are sent with the Instagram Send API on behalf of the business.
 >
-> We only reply to people who messaged the business first, and only inside Instagram's 24 hour standard messaging window: our server refuses any send when the person's last message is older than 24 hours, and holds it for the owner to handle in the Instagram app instead. We do not use message tags or the Human Agent feature, we never start conversations, and we limit how many messages an account and each conversation can send per hour. Message content is stored only to show the conversation history to the business, is never sold or used for advertising, and is deleted on request (data deletion callback and https://<domain>/data-deletion).
+> We only reply to people who messaged the business first, and only inside Instagram's 24 hour standard messaging window: our server refuses any send when the person's last message is older than 24 hours, and holds it for the owner to handle in the Instagram app instead. We do not use message tags or the Human Agent feature, we never start conversations, we space automated replies at least 15 seconds after the customer's message, and we limit how many messages an account can send per hour. Message content is stored only to show the conversation history to the business, is never sold or used for advertising, and is deleted on request (data deletion callback and https://<domain>/data-deletion).
 
 **How does this permission add value for the user?** (if asked)
 
@@ -178,10 +178,10 @@ Record one video per permission, each under 3 minutes, 1080p, browser full scree
 | Time | What to show (click) | What to say or caption |
 |---|---|---|
 | 0:00 | `https://<domain>` login page. Type the email, press Continue. | "This is dmSetter. A business owner signs in to their workspace." |
-| 0:15 | Settings (or the onboarding step), **Instagram** card shows Not connected. Click **Connect Instagram**. | "To connect their own Instagram professional account they click Connect Instagram." |
+| 0:15 | **More**, **Settings**, **Account** (or the Setup step *Connect Instagram or Messenger*). The **Instagram** card says "Connect your business Instagram account to receive messages." Click **Connect Instagram**. | "To connect their own Instagram professional account they click Connect Instagram." |
 | 0:25 | Instagram Login page: sign in as the business account. The consent screen lists the permissions. Pause 2 seconds on it, then **Allow**. | "Instagram Login asks the owner to allow access. We request instagram_business_basic and instagram_business_manage_messages." |
-| 0:50 | Back in dmSetter: **Connected as @[business]**. Point the cursor at the username. | "We use instagram_business_basic to read the account id and username. The username is shown here so the owner knows which account is connected, and the id routes incoming messages to this workspace." |
-| 1:10 | Click **Disconnect**, confirm, card shows Not connected. | "The owner can disconnect at any time, which deletes the stored token." |
+| 0:50 | Back in dmSetter, the Instagram card says **Connected as @[business]**. Point the cursor at the username. | "We use instagram_business_basic to read the account id and username. The username is shown here so the owner knows which account is connected, and the id routes incoming messages to this workspace." |
+| 1:10 | Click **Disconnect**, accept the confirmation, the card shows **Connect Instagram** again. | "The owner can disconnect at any time, which deletes the stored token." |
 | 1:25 | End. | |
 
 **Video 2: instagram_business_manage_messages** (about 2 minutes 40)
@@ -191,12 +191,12 @@ Record one video per permission, each under 3 minutes, 1080p, browser full scree
 | 0:00 | Signed in, Instagram connected (reconnect if you used Video 1's disconnect). Open **Messages** (inbox). | "Instagram is connected. This is the dmSetter inbox." |
 | 0:10 | Second screen: from the test sender account in the Instagram app, send the business a DM: "Hi, how does your coaching work?" | "A customer sends the business a direct message on Instagram." |
 | 0:25 | The new conversation appears in the inbox. Open it. | "The message arrives through the messages webhook, which needs instagram_business_manage_messages." |
-| 0:40 | The AI draft appears under the conversation. Edit one word in it. | "dmSetter prepares a suggested reply. The owner reviews and can edit it." |
-| 1:00 | Click **Approve and send**. | "When the owner approves, we send the reply with the Instagram Send API." |
+| 0:40 | The **AI DRAFT** card appears under the last message. Tap into a bubble and edit one word. | "dmSetter prepares a suggested reply. The owner reviews and can edit it." |
+| 1:00 | Click **Approve & send**. | "When the owner approves, we send the reply with the Instagram Send API." |
 | 1:10 | Second screen: the reply arrives in the test sender's Instagram. | "The customer receives the reply in Instagram." |
 | 1:25 | Back in dmSetter, type a manual reply in the composer and send it. Show it arriving. | "The owner can also type replies directly." |
-| 1:45 | Open an older test conversation whose last customer message is more than 24 hours old. Try to send. Show the message "Not sent: outside Instagram's 24 hour window" and the flag on the conversation. | "We only reply within Instagram's 24 hour window after the customer's last message. Outside it, nothing is sent and the conversation is flagged for the owner." |
-| 2:10 | Show the conversation mode switch (Off, Copilot, Autopilot) and the kill switch in Settings. | "The owner decides per conversation whether replies need approval, and can stop all automated replies instantly." |
+| 1:45 | Open an older test conversation whose last customer message is more than 24 hours old. The composer is locked and reads "Instagram only allows replies within 24 hours of their last message. This window closed [time]. You can reply as soon as they message again." Point at the disabled send button. | "We only reply within Instagram's 24 hour window after the customer's last message. Outside it the app will not send anything, manual or automated, and tells the owner why." |
+| 2:10 | Open **Details** on the conversation and show **AI mode**: *Copilot: AI drafts, you approve*, *Autopilot: AI sends automatically*, *Off: full manual takeover*. Switch it to **Off**. Then **Settings** and the **Kill switch**. | "The owner decides per conversation whether replies need approval, can take a conversation over completely, and can pause the AI everywhere with the kill switch." |
 | 2:25 | Open `https://<domain>/privacy` briefly, then `/data-deletion`. | "Our privacy policy explains what we store and how people can have their data deleted." |
 | 2:40 | End. | |
 

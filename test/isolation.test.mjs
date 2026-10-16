@@ -430,9 +430,13 @@ try {
   });
 
   // ---------- production boot ----------
-  const prod = await boot({ NODE_ENV: 'production', RATE_LIMIT_AUTH_IP: '3', OPEN_LOGIN_EMAILS: 'open@example.test' });
+  const prod = await boot({ NODE_ENV: 'production', RATE_LIMIT_AUTH_IP: '3', OPEN_LOGIN_EMAILS: 'open@example.test', FAST_TIMERS: '1' });
   servers.push(prod);
   await test('production boots without ADMIN_PIN when the PIN is off', async () => { assert.equal((await fetch(prod.base + '/health').then((r) => r.json())).ok, true); });
+  await test('production ignores FAST_TIMERS (keeps the 15s autopilot floor and real follow-up hours)', async () => {
+    for (let i = 0; i < 20 && !prod.logLines.some((l) => /timers (FAST|real)/.test(l)); i++) await sleep(100);
+    assert.ok(prod.logLines.some((l) => /timers real\)/.test(l)), 'boot line says timers real');
+  });
   await test('production: failed mail delivery is a clean error and nothing is logged', async () => {
     const r = await fetch(prod.base + '/api/auth/magic-link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'someone@example.test' }) });
     assert.equal(r.status, 503); assert.ok((await r.json()).error);
