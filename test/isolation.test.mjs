@@ -147,6 +147,12 @@ try {
     const s1 = (await jd.api('GET', '/api/settings')).json.settings; assert.equal(s1.prompt_persona, 'You are JD.');
   });
   await test('instagram shape is per account and disconnected by default', async () => { const r = await other.api('GET', '/api/me'); assert.equal(r.json.instagram.connected, false); assert.equal(r.json.instagram.oauth_available, false); });
+  await test('Messenger is hidden and refused for other workspaces until it is reviewed', async () => {
+    assert.equal((await other.api('GET', '/api/me')).json.messenger.available, false);
+    assert.equal((await jd.api('GET', '/api/me')).json.messenger.available, true);
+    const r = await other.api('POST', '/api/messenger/connect', { page_id: '102345678901234', token: 'x'.repeat(30) });
+    assert.equal(r.status, 403);
+  });
   await test('oauth start reports missing app credentials', async () => { const r = await fetch(srv.base + '/auth/instagram/start', { headers: { Cookie: other.cookie } }); assert.equal(r.status, 503); });
   await test('oauth callback with a bad state redirects with an error', async () => { const r = await fetch(srv.base + '/auth/instagram/callback?code=x&state=nope', { redirect: 'manual' }); assert.equal(r.status, 302); assert.ok(String(r.headers.get('location')).includes('connect_error')); });
   await test('export contains only the owner\'s data', async () => {
@@ -281,7 +287,7 @@ try {
   }
   await test('messenger: another workspace cannot claim, see or disconnect acc_1\'s Page', async () => {
     const claim = await g.api('POST', '/api/messenger/connect', { page_id: '102000000000555', token: 'some-page-token-0123456789' });
-    assert.equal(claim.status, 409);
+    assert.equal(claim.status, 403); // refused before the 409 'already connected' check while Messenger is first-account only
     const mine = (await g.api('GET', '/api/me')).json.messenger;
     assert.equal(mine.connected, false); assert.equal(mine.page_name, null);
     assert.equal((await g.api('POST', '/api/messenger/disconnect')).status, 200);

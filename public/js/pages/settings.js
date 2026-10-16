@@ -95,7 +95,7 @@ function renderSettings() {
     '<div class="settings-wrap"><div class="settings-intro">Configure your account and automation rules</div><div class="settings-col">' +
 
     /* 1 — Account */
-    '<div class="card settings-card">' + cardHeadHtml(chipHtml('user', 'var(--accent-text)', 'var(--indigo-soft)'), 'Account', 'Your profile, Instagram and Messenger') +
+    '<div class="card settings-card">' + cardHeadHtml(chipHtml('user', 'var(--accent-text)', 'var(--indigo-soft)'), 'Account', state.me?.messenger?.available === false ? 'Your profile and Instagram' : 'Your profile, Instagram and Messenger') +
     igSectionHtml(state.igStatus) +
     messengerCard(state.me?.messenger) +
     '<div class="set-row" style="margin-top:4px"><div><div class="sr-label">Engine status</div><div class="sr-sub">Anthropic runtime availability</div></div><span class="tag ' + (ai ? 'green' : 'red') + '">' + (ai ? 'API key loaded' : 'No API key') + '</span></div></div>' +

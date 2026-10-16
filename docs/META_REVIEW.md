@@ -9,7 +9,7 @@ dmSetter uses the **Instagram API with Instagram Login** (graph.instagram.com). 
 | `instagram_business_basic` | Read the connected professional account's id and username, so the inbox shows which account is connected and webhooks are routed to the right workspace. |
 | `instagram_business_manage_messages` | Receive the direct messages people send to the business (webhook field `messages`) and send the business's replies. |
 
-The Instagram side does **not** use Facebook Login, so the old Facebook Login permissions (`instagram_manage_messages`, `pages_manage_metadata`, `pages_show_list`) are not requested and must not be added. dmSetter also has an optional Facebook Messenger channel (Settings, Account, Connect Messenger, using a Facebook Page access token). That needs `pages_messaging`, which is a separate review: keep it out of this Instagram submission and out of the screencasts. It also does **not** use the Human Agent feature or any message tag: every send happens inside Instagram's 24 hour standard messaging window, and only to people who messaged the business first. The code enforces this in one place (`outboundGate` in `lib/instagram.js`), so mention it confidently in the review.
+The Instagram side does **not** use Facebook Login, so the old Facebook Login permissions (`instagram_manage_messages`, `pages_manage_metadata`, `pages_show_list`) are not requested and must not be added. dmSetter also has an optional Facebook Messenger channel (Settings, Account, Connect Messenger, using a Facebook Page access token). That needs `pages_messaging`, which is a separate review: keep it out of this Instagram submission and out of the screencasts. Until it is approved only the first account (yours) sees Messenger; every other workspace sees Instagram only. Set `MESSENGER_PUBLIC=1` on Railway once Messenger is approved. It also does **not** use the Human Agent feature or any message tag: every send happens inside Instagram's 24 hour standard messaging window, and only to people who messaged the business first. The code enforces this in one place (`outboundGate` in `lib/instagram.js`), so mention it confidently in the review.
 
 Order of work:
 
@@ -143,7 +143,7 @@ Open **App Review**, **Permissions and features**. For each of the two permissio
 ### 8.1 App settings and verification details
 
 - **Platform**: Website. Site URL `https://<domain>`.
-- **Test credentials**: create a reviewer login. Add the reviewer email to `OPEN_LOGIN_EMAILS` (or invite it to a demo workspace) so they can sign in without an email link, and connect a test Instagram professional account to that workspace before submitting. Write in the notes:
+- **Test credentials**: create a reviewer login in its own workspace, not yours (your workspace still shows Messenger). Add the reviewer email to `OPEN_LOGIN_EMAILS` (or invite it to a demo workspace) so they can sign in without an email link, and connect a test Instagram professional account to that workspace before submitting. Write in the notes:
 
 > Sign in at https://<domain> with [reviewer email] (no password needed: enter the email and press Continue). The workspace is already connected to the Instagram professional account @[test business account]. To send a test DM, message @[test business account] from any Instagram account. The account @[second test account] is available for this: [login details if you share one]. Replies only go to people who messaged the business first and only within 24 hours of their last message.
 

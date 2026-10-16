@@ -2962,11 +2962,16 @@ app.post('/api/instagram/disconnect', requireAccount, requireOwner, (req, res) =
 });
 
 // ---------- Messenger: connect a Facebook Page ----------
+// Messenger needs its own Meta review (pages_messaging). Until that is approved
+// only the first account (the operator's own) can connect a Page; other
+// workspaces don't see it. MESSENGER_PUBLIC=1 opens it to every account.
+const messengerAvailable = (accountId) => accountId === FIRST_ACCOUNT_ID || process.env.MESSENGER_PUBLIC === '1';
 /** The messenger object shared by /api/me and /api/messenger/status. */
 function messengerShape(accountId) {
   const row = fbRowFor(accountId);
   const configured = fbConfigured();
   return {
+    available: messengerAvailable(accountId),
     connected: configured && (!row || row.status !== 'disconnected'),
     page_id: row?.page_id || (configured ? String(process.env.FB_PAGE_ID || '') : null) || null,
     page_name: row?.page_name || null,
@@ -2987,6 +2992,7 @@ app.get('/api/messenger/status', requireAdmin, async (req, res) => {
  * encrypted. One Page per account; a Page can belong to only one account.
  */
 app.post('/api/messenger/connect', requireAccount, requireOwner, async (req, res) => {
+  if (!messengerAvailable(req.accountId)) return res.status(403).json({ error: 'Messenger is not available for this workspace yet.' });
   const pageId = String(req.body?.page_id || '').trim();
   const token = String(req.body?.token || '').trim();
   if (!/^\d{5,25}$/.test(pageId)) return res.status(400).json({ error: 'Enter the numeric Facebook Page ID.' });

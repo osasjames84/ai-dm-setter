@@ -1,6 +1,6 @@
 'use strict';
 const SETUP_STEPS = [
-  ['instagram','Connect Instagram or Messenger'], ['template','Choose a template'],
+  ['instagram','Connect Instagram'], ['template','Choose a template'],
   ['sections','Write your script'], ['next_step','Choose the next step'], ['test_drive','Test your script'],
 ];
 const SETUP_FIELDS = [
@@ -113,6 +113,7 @@ function updateSetupProgress() {
 }
 function drawSetup() {
   const host=$('#setup-content'); if(!host) return;
+  SETUP_STEPS[0][1]=state.me?.messenger?.available?'Connect Instagram or Messenger':'Connect Instagram';
   const step=state.onboardingStep;
   host.innerHTML='<nav class="setup-steps" aria-label="Setup steps">'+SETUP_STEPS.map(([key,label],i)=>'<button class="btn '+(i===step?'btn-primary':'btn-ghost')+'" data-setup-step="'+i+'" '+(i===step?'aria-current="step"':'')+'>'+ (state.onboarding.steps[key]?'✓ ':String(i+1)+'. ')+esc(label)+'</button>').join('')+'</nav><div class="card setup-card" id="setup-step-body"></div>';
   host.querySelectorAll('[data-setup-step]').forEach(b=>b.addEventListener('click',()=> {

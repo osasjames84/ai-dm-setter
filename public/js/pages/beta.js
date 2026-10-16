@@ -25,6 +25,7 @@ function bindInstagram(host,refresh) {
 /** Facebook Messenger: connect a Page with its Page ID + Page access token. */
 function messengerCard(st) {
   const fb=st || state.me?.messenger || {};
+  if(fb.available===false && !fb.connected) return ''; // Messenger not open to this workspace yet
   const owner=state.me?.user?.role==='owner';
   const connected=!!fb.connected && !fb.needs_reconnect;
   const hook=location.origin+'/webhook/messenger';
