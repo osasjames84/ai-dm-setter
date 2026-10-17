@@ -37,7 +37,7 @@ import { legalPage, privacyPage, termsPage, dataDeletionPage, PAGE_HEAD, PAGE_BR
 installLogging();
 import { runMigrations } from './lib/migrations.js';
 import { runAs, enterAs, outside, currentAccount, currentAccountOrFirst, FIRST_ACCOUNT_ID } from './lib/tenancy.js';
-import { initAuth, requestMagicLink, consumeMagicLink, peekMagicLink, sessionFromRequest, logout as authLogout, logoutAll, sessionHashOf, sessionStillValid, pruneAuth, isEmail, normalizeEmail } from './lib/auth.js';
+import { initAuth, requestMagicLink, consumeMagicLink, peekMagicLink, sessionFromRequest, logout as authLogout, logoutAll, sessionHashOf, sessionStillValid, pruneAuth, isEmail, normalizeEmail, openSession, placeholderEmailFor, isPlaceholderEmail } from './lib/auth.js';
 import { sendEmail } from './lib/notify.js';
 import { setUsageHook, costUsd } from './lib/usage.js';
 
@@ -1639,9 +1639,23 @@ function instagramShape(accountId) {
     signature_verified: !!process.env.IG_APP_SECRET,
   };
 }
+/** A login's email for display: null while an Instagram sign-up has not added one. */
+const publicEmail = (e) => (isPlaceholderEmail(e) ? null : e);
+/** Add or change the signed-in user's email (Instagram sign-ups start without one). */
+app.post('/api/me/email', requireAccount, (req, res) => {
+  const email = normalizeEmail(req.body?.email);
+  if (!isEmail(email) || isPlaceholderEmail(email)) return res.status(400).json({ error: 'Enter a valid email address' });
+  const other = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+  if (other && other.id !== req.user.id) return res.status(409).json({ error: 'That email already has a login' });
+  db.prepare('UPDATE users SET email = ? WHERE id = ?').run(email, req.user.id);
+  // The owner's first real email also becomes the notification address, if none is set.
+  if (req.user.role === 'owner' && !String(getSetting('notify_emails') || '').trim()) setSetting('notify_emails', email);
+  audit(req.accountId, req.user.id, 'email-set', email);
+  res.json({ ok: true, email });
+});
 app.get('/api/me', requireAccount, (req, res) => {
   res.json({
-    user: { id: req.user.id, email: req.user.email, role: req.user.role, is_platform_admin: !!req.user.is_platform_admin },
+    user: { id: req.user.id, email: publicEmail(req.user.email), email_missing: isPlaceholderEmail(req.user.email), role: req.user.role, is_platform_admin: !!req.user.is_platform_admin },
     account: { id: req.account.id, name: req.account.name, access_status: req.account.access_status },
     instagram: instagramShape(req.accountId),
     messenger: messengerShape(req.accountId),
@@ -1674,7 +1688,7 @@ app.get('/api/admin/accounts/:id/overview', requireAccount, requirePlatformAdmin
       FROM conversations c WHERE account_id = ? ORDER BY last_message_at DESC NULLS LAST LIMIT 20`).all(id);
     res.json({
       account: acc,
-      users: db.prepare('SELECT id, email, role, last_login_at FROM users WHERE account_id = ?').all(id),
+      users: db.prepare('SELECT id, email, role, last_login_at FROM users WHERE account_id = ?').all(id).map((u) => ({ ...u, email: publicEmail(u.email) })),
       settings: { coach_name: s.coach_name, kill_switch: s.kill_switch, default_mode: s.default_mode, template_id: s.template_id, next_step_type: s.next_step_type, currency: s.currency, country: s.country, timezone: s.timezone, test_drive_passed_at: s.test_drive_passed_at },
       script: { checks: scriptChecks(), version: currentPromptVersion(id), sections_filled: PROMPT_KEYS.filter((k) => String(s[k] || '').trim()).length, sections_total: PROMPT_KEYS.length },
       instagram: ig ? { username: ig.username, status: ig.status, expires_at: ig.expires_at, last_error: ig.last_error, via: ig.token_enc ? 'oauth' : 'env' } : null,
@@ -1697,7 +1711,7 @@ app.get('/api/admin/accounts', requireAccount, requirePlatformAdmin, (req, res) 
       (SELECT MAX(last_login_at) FROM users u WHERE u.account_id = a.id) AS last_login_at,
       (SELECT business_id FROM instagram_accounts i WHERE i.account_id = a.id) AS instagram_business_id
     FROM accounts a ORDER BY a.created_at DESC`).all();
-  res.json(rows);
+  res.json(rows.map((r) => ({ ...r, owner_email: publicEmail(r.owner_email) })));
 });
 app.patch('/api/admin/accounts/:id/access', requireAccount, requirePlatformAdmin, (req, res) => {
   const status = String(req.body?.status || '');
@@ -1738,7 +1752,7 @@ app.get('/api/usage', requireAccount, (req, res) => res.json(usageSummary(req.ac
 // ---------- team ----------
 app.get('/api/team', requireAccount, (req, res) => {
   res.json(db.prepare('SELECT id, email, role, created_at, last_login_at, (last_login_at IS NOT NULL) AS accepted FROM users WHERE account_id = ? ORDER BY created_at').all(req.accountId)
-    .map((u) => ({ ...u, accepted: !!u.accepted })));
+    .map((u) => ({ ...u, email: publicEmail(u.email), accepted: !!u.accepted })));
 });
 app.post('/api/team/invite', requireAccount, requireOwner, limitInviteAccount, async (req, res) => {
   const email = normalizeEmail(req.body?.email);
@@ -1844,7 +1858,9 @@ function deleteAccountData(accountId) {
 // Owner: body { confirm: "<owner email>" } guards against an accidental click.
 app.delete('/api/account', requireAccount, requireOwner, (req, res) => {
   if (req.accountId === FIRST_ACCOUNT_ID) return res.status(400).json({ error: 'The first account cannot be deleted' });
-  if (normalizeEmail(req.body?.confirm) !== normalizeEmail(req.user.email)) return res.status(400).json({ error: 'Type your email in "confirm" to delete the workspace' });
+  // Confirm with the login email, or with DELETE for an Instagram sign-up that has no email yet.
+  const expected = isPlaceholderEmail(req.user.email) ? 'delete' : normalizeEmail(req.user.email);
+  if (normalizeEmail(req.body?.confirm) !== expected) return res.status(400).json({ error: isPlaceholderEmail(req.user.email) ? 'Type DELETE in "confirm" to delete the workspace' : 'Type your email in "confirm" to delete the workspace' });
   const name = req.account.name;
   deleteAccountData(req.accountId);
   audit(FIRST_ACCOUNT_ID, req.user.id, 'account-deleted', `${req.accountId} (${name}) by its owner ${req.user.email}`);
@@ -2908,43 +2924,91 @@ app.post('/api/conversations/:id/lead-message', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- instagram login (OAuth) per account ----------
-// GET /auth/instagram/start  (logged in)  → 302 to Instagram's consent screen
-// GET /auth/instagram/callback           → exchanges the code, stores the
-//   60-day token encrypted on the account, subscribes the webhook, 302 to
-//   /?connected=1 (or /?connect_error=…). Needs IG_APP_ID + IG_APP_SECRET.
+// ---------- instagram login (OAuth) ----------
+// GET /auth/instagram/start  (logged in)  → connect Instagram to this workspace
+// GET /auth/instagram/login  (signed out) → "Continue with Instagram": sign in,
+//   or create a workspace (pending approval) for an Instagram account we don't know
+// GET /auth/instagram/callback           → both land here. Exchanges the code,
+//   stores the 60-day token encrypted on the account, subscribes the webhook,
+//   and (sign-in) opens a session for the workspace owner. 302 to /?connected=1,
+//   /?signed_in=instagram, or /?connect_error= / /?signin_error=.
+// Needs IG_APP_ID + IG_APP_SECRET. Same two permissions either way.
 const IG_REDIRECT = () => `${PUBLIC_URL()}/auth/instagram/callback`;
-app.get('/auth/instagram/start', requireAccount, (req, res) => {
-  if (!igOauthConfigured()) return res.status(503).type('html').send(legalPage('Instagram login not configured', [['Missing app credentials', 'IG_APP_ID and IG_APP_SECRET are not set on the server, so Instagram login is unavailable. The first account can still use the env token.']], { plain: true }));
+const IG_NOT_CONFIGURED_PAGE = () => legalPage('Instagram login not configured', [['Missing app credentials', 'IG_APP_ID and IG_APP_SECRET are not set on the server, so Instagram login is unavailable. The first account can still use the env token.']], { plain: true });
+/** One OAuth round trip. account_id '' marks a sign-in (nobody is logged in yet). */
+function startIgOauth(res, accountId, userId) {
   const state = crypto.randomBytes(24).toString('base64url');
   db.prepare('DELETE FROM oauth_states WHERE expires_at < ?').run(nowIso());
   db.prepare('INSERT INTO oauth_states (state, account_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)')
-    .run(state, req.accountId, req.user.id, nowIso(), new Date(Date.now() + 15 * 60_000).toISOString());
+    .run(state, accountId, userId, nowIso(), new Date(Date.now() + 15 * 60_000).toISOString());
   res.redirect(igAuthUrl(IG_REDIRECT(), state));
+}
+app.get('/auth/instagram/start', requireAccount, (req, res) => {
+  if (!igOauthConfigured()) return res.status(503).type('html').send(IG_NOT_CONFIGURED_PAGE());
+  startIgOauth(res, req.accountId, req.user.id);
 });
+app.get('/auth/instagram/login', limitPublicIp, (req, res) => {
+  if (!igOauthConfigured()) return res.redirect('/?signin_error=' + encodeURIComponent('Instagram sign-in is not available yet. Use your email.'));
+  startIgOauth(res, '', '');
+});
+app.get('/api/auth/options', (req, res) => res.json({ instagram_login: igOauthConfigured() }));
+
+/** Store (or replace) an account's Instagram connection and subscribe its webhook. */
+async function storeIgConnection(accountId, userId, got) {
+  await runAs(accountId, async () => {
+    db.prepare('DELETE FROM instagram_accounts WHERE account_id = ?').run(accountId);
+    db.prepare(`INSERT INTO instagram_accounts (account_id, business_id, app_scoped_id, username, token_enc, expires_at, scopes, status, last_refresh_at, last_error, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'connected', ?, NULL, ?)`)
+      .run(accountId, got.businessId, got.appScopedId || null, got.username, encrypt(got.token), got.expiresAt, got.scopes, nowIso(), nowIso());
+    setSetting('ig_auth_error', '');
+    const subscribed = await igSubscribeApp(got.token, got.businessId);
+    audit(accountId, userId, 'instagram-connect', `@${got.username || got.businessId} subscribed=${subscribed}`);
+    console.log(`[instagram] ${accountId} connected @${got.username || '?'} (webhook subscription ${subscribed ? 'ok' : 'FAILED'})`);
+  });
+}
+
+/**
+ * Sign in with Instagram: the workspace that already has this Instagram account
+ * signs in as its owner; an unknown account gets a new workspace (pending
+ * approval, like an email sign-up) owned by a user with no email yet.
+ */
+async function signInWithInstagram(got) {
+  const known = igRowForBusinessId(got.businessId) || (got.appScopedId ? igRowForBusinessId(got.appScopedId) : null);
+  let accountId = known?.account_id || null;
+  const created = !accountId;
+  if (created) accountId = createAccount({ name: got.username ? '@' + got.username : 'Instagram account', ownerEmail: placeholderEmailFor(got.businessId) });
+  let user = db.prepare("SELECT * FROM users WHERE account_id = ? AND role = 'owner' ORDER BY created_at LIMIT 1").get(accountId);
+  if (!user) {
+    // A workspace with no owner login yet (the first account before OWNER_EMAIL was set).
+    const id = 'usr_' + crypto.randomBytes(6).toString('hex');
+    db.prepare('INSERT INTO users (id, account_id, email, role, created_at) VALUES (?, ?, ?, ?, ?)').run(id, accountId, placeholderEmailFor(got.businessId), 'owner', nowIso());
+    user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  }
+  await storeIgConnection(accountId, user.id, got);
+  audit(accountId, user.id, created ? 'signup:instagram' : 'signin:instagram', '@' + (got.username || got.businessId));
+  return { session: openSession(user), created };
+}
+
 app.get('/auth/instagram/callback', limitPublicIp, async (req, res) => {
-  const fail = (msg) => res.redirect('/?connect_error=' + encodeURIComponent(String(msg).slice(0, 120)));
   const { code, state, error, error_description } = req.query;
-  if (error) return fail(error_description || error);
   const st = state && db.prepare('SELECT * FROM oauth_states WHERE state = ?').get(String(state));
+  const signIn = !!st && st.account_id === '';
+  const fail = (msg) => res.redirect((signIn ? '/?signin_error=' : '/?connect_error=') + encodeURIComponent(String(msg).slice(0, 120)));
+  if (st) db.prepare('DELETE FROM oauth_states WHERE state = ?').run(st.state); // one use, whatever happens next
+  if (error) return fail(error_description || error);
   if (!st || st.expires_at < nowIso()) return fail('login link expired, try again');
-  db.prepare('DELETE FROM oauth_states WHERE state = ?').run(st.state);
   if (!code) return fail('no code returned');
   try {
     const got = await igCompleteOauth(String(code), IG_REDIRECT());
     if (!got.businessId) return fail('could not read the Instagram account id');
+    if (signIn) {
+      const { session, created } = await signInWithInstagram(got);
+      res.setHeader('Set-Cookie', session.setCookie);
+      return res.redirect('/?signed_in=instagram' + (created ? '&new=1' : ''));
+    }
     const taken = igRowForBusinessId(got.businessId);
     if (taken && taken.account_id !== st.account_id) return fail('that Instagram account is already connected to another workspace');
-    await runAs(st.account_id, async () => {
-      db.prepare('DELETE FROM instagram_accounts WHERE account_id = ?').run(st.account_id);
-      db.prepare(`INSERT INTO instagram_accounts (account_id, business_id, app_scoped_id, username, token_enc, expires_at, scopes, status, last_refresh_at, last_error, updated_at)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, 'connected', ?, NULL, ?)`)
-        .run(st.account_id, got.businessId, got.appScopedId || null, got.username, encrypt(got.token), got.expiresAt, got.scopes, nowIso(), nowIso());
-      setSetting('ig_auth_error', '');
-      const subscribed = await igSubscribeApp(got.token, got.businessId);
-      audit(st.account_id, st.user_id, 'instagram-connect', `@${got.username || got.businessId} subscribed=${subscribed}`);
-      console.log(`[instagram] ${st.account_id} connected @${got.username || '?'} (webhook subscription ${subscribed ? 'ok' : 'FAILED'})`);
-    });
+    await storeIgConnection(st.account_id, st.user_id, got);
     res.redirect('/?connected=1');
   } catch (e) {
     console.error('[instagram] oauth failed:', e.message);

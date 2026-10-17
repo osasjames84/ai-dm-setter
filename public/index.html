@@ -18,6 +18,10 @@
     <div class="brand-badge" data-icon="plane"></div>
     <h1>dmSetter</h1>
     <p id="login-description">Sign in or create an account with your email.</p>
+    <div id="login-instagram" class="hidden">
+      <a class="btn btn-primary login-ig-btn" id="login-ig" href="/auth/instagram/login"><span data-icon="instagram" data-size="18"></span>Continue with Instagram</a>
+      <div class="login-or"><span>or use your email</span></div>
+    </div>
     <form id="login-form">
       <label for="login-email" class="login-label">Email address</label>
       <input id="login-email" type="email" autocomplete="email" inputmode="email" placeholder="you@business.com" required>
@@ -55,6 +59,13 @@
   </aside>
   <main id="main"><p id="live-status" class="live-status" role="status"></p>
     <div id="account-access-banner" class="account-access-banner hidden" role="status"></div>
+    <form id="email-banner" class="account-access-banner email-banner hidden" novalidate>
+      <label for="email-banner-input">Add your email so we can send you alerts and you can sign in without Instagram.</label>
+      <input id="email-banner-input" type="email" autocomplete="email" inputmode="email" placeholder="you@business.com" required>
+      <button class="btn btn-primary btn-sm" type="submit">Save</button>
+      <button class="btn btn-ghost btn-sm" type="button" id="email-banner-later">Later</button>
+      <span role="status" id="email-banner-status"></span>
+    </form>
     <section id="view-onboarding" class="hidden"><div class="page" id="onboarding-page"></div></section>
     <section id="view-dashboard" class="hidden"><div class="page" id="dash-page"></div></section>
     <section id="view-messages" class="hidden"></section>

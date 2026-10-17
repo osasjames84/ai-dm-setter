@@ -195,9 +195,9 @@ async function renderTeam() {
   try{
     const members=await api('/api/team');if(!Array.isArray(members))throw new Error('Could not read team members.');if(!content.isConnected)return;
     const owner=state.me.user.role==='owner';
-    content.innerHTML=members.map(m=>'<div class="card team-row"><div><strong>'+esc(m.email)+'</strong><p>'+esc(m.role)+' · '+(m.accepted?'Joined':'Invited')+'</p></div>'+(owner && m.id!==state.me.user.id?'<button class="btn btn-ghost" data-remove="'+esc(m.id)+'">Remove</button>':'')+'</div>').join('')+(owner?'<form id="invite-form"><label for="invite-email">Invite a setter</label><input id="invite-email" type="email" required placeholder="colleague@business.com"><button class="btn btn-primary">Invite</button><p role="status" id="invite-status"></p></form>':'');
+    content.innerHTML=members.map(m=>'<div class="card team-row"><div><strong>'+esc(m.email||'Instagram login')+'</strong><p>'+esc(m.role)+' · '+(m.accepted?'Joined':'Invited')+'</p></div>'+(owner && m.id!==state.me.user.id?'<button class="btn btn-ghost" data-remove="'+esc(m.id)+'">Remove</button>':'')+'</div>').join('')+(owner?'<form id="invite-form"><label for="invite-email">Invite a setter</label><input id="invite-email" type="email" required placeholder="colleague@business.com"><button class="btn btn-primary">Invite</button><p role="status" id="invite-status"></p></form>':'');
     content.querySelectorAll('[data-remove]').forEach(button=>button.addEventListener('click',async()=>{
-      const m=members.find(m=>m.id===button.dataset.remove);if(!confirm('Remove '+m.email+' from this account? Their sessions will end.'))return;button.disabled=true;
+      const m=members.find(m=>m.id===button.dataset.remove);if(!confirm('Remove '+(m.email||'this member')+' from this account? Their sessions will end.'))return;button.disabled=true;
       try{await api('/api/team/'+encodeURIComponent(m.id),{method:'DELETE'});if(content.isConnected && state.route==='team')await renderTeam();}catch(err){toast(err.message,'err');button.disabled=false;}
     }));
     content.querySelector('form')?.addEventListener('submit',async e=>{

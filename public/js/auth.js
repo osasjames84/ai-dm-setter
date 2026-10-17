@@ -62,10 +62,22 @@ async function restoreSession() {
     $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
     await boot();
   } catch (err) {
-    showLogin(err.status === 401 ? '' : 'Could not connect to your account. Please retry.');
+    showLogin(err.status === 401 ? (signinError ? 'Instagram sign-in failed: ' + signinError : '') : 'Could not connect to your account. Please retry.');
     if (err.status !== 401) retry.classList.remove('hidden');
   } finally { retry.disabled = false; $('#login-send').disabled = false; }
 }
+/** Show "Continue with Instagram" when the server has Instagram login configured. */
+async function loadSignInOptions() {
+  try {
+    const o = await fetch('/api/auth/options', { credentials:'same-origin' }).then(r => r.json()); // plain fetch: showLogin must not cancel it
+    $('#login-instagram').classList.toggle('hidden', !o.instagram_login);
+    $('#login-description').textContent = o.instagram_login ? 'Sign in or create an account with your Instagram business account.' : 'Sign in or create an account with your email.';
+  } catch { /* email sign-in still works */ }
+}
+// An Instagram sign-in that failed comes back as /?signin_error=…
+const signinError = new URLSearchParams(location.search).get('signin_error');
+if (signinError) history.replaceState(null, '', location.pathname);
+loadSignInOptions();
 $('#login-form').addEventListener('submit', requestSignIn);
 $('#login-change').addEventListener('click', () => {
   $('#login-form').classList.remove('hidden'); $('#login-sent').classList.add('hidden');

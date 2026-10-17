@@ -143,15 +143,15 @@ Open **App Review**, **Permissions and features**. For each of the two permissio
 ### 8.1 App settings and verification details
 
 - **Platform**: Website. Site URL `https://<domain>`.
-- **Test credentials**: create a reviewer login in its own workspace, not yours (your workspace still shows Messenger). Add the reviewer email to `OPEN_LOGIN_EMAILS` (or invite it to a demo workspace) so they can sign in without an email link, and connect a test Instagram professional account to that workspace before submitting. Write in the notes:
+- **Test credentials**: the reviewer signs in with **Continue with Instagram**, using a test Instagram professional account you control (not your own business account: yours opens your workspace, which still shows Messenger). Sign in with it once yourself first, so its workspace exists, approve that workspace in the operator view, and finish Setup. Email sign-in through `OPEN_LOGIN_EMAILS` still works as a fallback. Write in the notes:
 
-> Sign in at https://<domain> with [reviewer email] (no password needed: enter the email and press Continue). The workspace is already connected to the Instagram professional account @[test business account]. To send a test DM, message @[test business account] from any Instagram account. The account @[second test account] is available for this: [login details if you share one]. Replies only go to people who messaged the business first and only within 24 hours of their last message.
+> Open https://<domain> and tap Continue with Instagram. Log in with the Instagram professional account @[test business account], password [password]. That signs in to its dmSetter workspace and connects the account. To send a test DM, message @[test business account] from any Instagram account; @[second test account] is available for this: [login details]. Replies only go to people who messaged the business first and only within 24 hours of their last message.
 
 ### 8.2 instagram_business_basic
 
 **How will your app use this permission?**
 
-> dmSetter is a web app that helps a small business manage the direct messages sent to its own Instagram professional account. When the business owner clicks Connect Instagram, they sign in with Instagram Login and we use instagram_business_basic to read the connected account's Instagram user id and username. We use the id to link incoming message webhooks to the right business workspace, and we show the username in the app ("Connected as @username") so the owner can see which account is connected. We do not read or store any other profile data, media or followers, and we never use this data for advertising or share it with other businesses.
+> dmSetter is a web app that helps a small business manage the direct messages sent to its own Instagram professional account. The business owner signs in to dmSetter with Instagram Login (Continue with Instagram), or connects Instagram from Settings after signing in with email, and we use instagram_business_basic to read the account's Instagram user id and username. We use the id to find the business's workspace when they sign in and to link incoming message webhooks to that workspace, and we show the username in the app ("Connected as @username") so the owner can see which account is connected. We do not read or store any other profile data, media or followers, and we never use this data for advertising or share it with other businesses.
 
 **How does this permission add value for the user?** (if asked)
 
@@ -177,10 +177,10 @@ Record one video per permission, each under 3 minutes, 1080p, browser full scree
 
 | Time | What to show (click) | What to say or caption |
 |---|---|---|
-| 0:00 | `https://<domain>` login page. Type the email, press Continue. | "This is dmSetter. A business owner signs in to their workspace." |
-| 0:15 | **More**, **Settings**, **Account** (or the Setup step *Connect Instagram or Messenger*). The **Instagram** card says "Connect your business Instagram account to receive messages." Click **Connect Instagram**. | "To connect their own Instagram professional account they click Connect Instagram." |
-| 0:25 | Instagram Login page: sign in as the business account. The consent screen lists the permissions. Pause 2 seconds on it, then **Allow**. | "Instagram Login asks the owner to allow access. We request instagram_business_basic and instagram_business_manage_messages." |
-| 0:50 | Back in dmSetter, the Instagram card says **Connected as @[business]**. Point the cursor at the username. | "We use instagram_business_basic to read the account id and username. The username is shown here so the owner knows which account is connected, and the id routes incoming messages to this workspace." |
+| 0:00 | `https://<domain>` sign-in page. Click **Continue with Instagram**. | "This is dmSetter. A business owner signs in with their Instagram professional account." |
+| 0:10 | Instagram Login page: sign in as the business account. The consent screen lists the permissions. Pause 2 seconds on it, then **Allow**. | "Instagram Login asks the owner to allow access. We request instagram_business_basic and instagram_business_manage_messages." |
+| 0:35 | Back in dmSetter, signed in. Open **More**, **Settings**, **Account**: the Instagram card says **Connected as @[business]**. Point the cursor at the username. | "We use instagram_business_basic to read the account id and username. The id identifies the workspace this account signs in to and routes incoming messages to it; the username is shown so the owner knows which account is connected." |
+| 0:55 | (Optional) Show the banner asking for an email and close it with **Later**. | "The owner can add an email for alerts. Nothing else from the profile is stored." |
 | 1:10 | Click **Disconnect**, accept the confirmation, the card shows **Connect Instagram** again. | "The owner can disconnect at any time, which deletes the stored token." |
 | 1:25 | End. | |
 

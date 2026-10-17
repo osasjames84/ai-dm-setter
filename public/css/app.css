@@ -378,6 +378,10 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .login-card #login-email { text-align: left; font-size: 16px; letter-spacing: normal; font-weight: 400; height: 46px; }
 .login-label { display: block; text-align: left; margin: 0 0 6px; font-size: var(--fs-sm); font-weight: 600; color: var(--c-text); }
 #login-sent h2 { font-size: 20px; margin-top: 20px; }
+.login-ig-btn { width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none; }
+.login-or { display: flex; align-items: center; gap: 12px; margin: 20px 0 16px; color: var(--c-text-muted); font-size: var(--fs-sm); }
+.login-or::before, .login-or::after { content: ''; flex: 1; height: 1px; background: var(--c-border); }
+#login-instagram:not(.hidden) ~ #login-form #login-send { background: transparent; color: var(--c-text); border: 1px solid var(--c-border); }
 #login-sent p { overflow-wrap: anywhere; margin-bottom: 8px; }
 
 /* =============================================================================
@@ -1675,6 +1679,11 @@ input.mono-ph::placeholder { font-family: var(--font-mono); }
    ============================================================================= */
 .account-access-banner { padding: 12px 24px; background: var(--c-warning-soft); color: var(--c-text); border-bottom: 1px solid var(--c-warning-border); font-size: var(--fs-sm); font-weight: 500; flex-shrink: 0; }
 .connection-warning { color: var(--c-warning) !important; }
+.email-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.email-banner label { flex: 1 1 260px; }
+.email-banner input { flex: 0 1 240px; min-width: 0; height: 34px; }
+.email-banner [role=status] { flex-basis: 100%; color: var(--c-danger); }
+.email-banner [role=status]:empty { display: none; }
 html.has-access-banner #main { display: flex; flex-direction: column; }
 html.has-access-banner #view-messages { height: auto; flex: 1; min-height: 0; }
 html.has-access-banner #main > section:not(#view-messages) { overflow: auto; min-height: 0; }

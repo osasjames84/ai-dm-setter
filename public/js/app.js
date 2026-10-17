@@ -23,8 +23,28 @@ function renderAccount() {
   const banner = $('#account-access-banner');
   banner.textContent = access === 'pending' ? 'Your account is awaiting approval. You can prepare your setup while you wait.' : access === 'paused' ? 'Account access is paused. You can still read your inbox. Contact JD to reactivate.' : ig.needs_reconnect ? 'Instagram needs reconnecting. Open Settings to restore the connection.' : '';
   banner.classList.toggle('hidden', !banner.textContent);
-  document.documentElement.classList.toggle('has-access-banner', !!banner.textContent);
+  // Instagram sign-ups start without an email: ask once per browser session.
+  let later = false; try { later = sessionStorage.getItem('email-banner-later') === '1'; } catch { /* storage blocked */ }
+  const askEmail = !!me.user.email_missing && !later;
+  $('#email-banner').classList.toggle('hidden', !askEmail);
+  document.documentElement.classList.toggle('has-access-banner', !!banner.textContent || askEmail);
 }
+$('#email-banner').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = $('#email-banner-input'), status = $('#email-banner-status'), button = e.currentTarget.querySelector('button[type=submit]');
+  if (!input.checkValidity()) { status.textContent = 'Enter a valid email address.'; input.focus(); return; }
+  button.disabled = true; status.textContent = '';
+  try {
+    await api('/api/me/email', { method: 'POST', body: { email: input.value.trim() } });
+    await loadIdentity();
+    toast('Email saved.');
+  } catch (err) { status.textContent = err.message; }
+  finally { button.disabled = false; }
+});
+$('#email-banner-later').addEventListener('click', () => {
+  try { sessionStorage.setItem('email-banner-later', '1'); } catch { /* storage blocked */ }
+  renderAccount();
+});
 async function loadSettings() {
   try { state.settings = await api('/api/settings'); renderKillDot(); renderAccount(); } catch (e) { /* ignore */ }
 }
@@ -61,8 +81,9 @@ async function boot() {
   const callback=new URLSearchParams(location.search);
   if(callback.has('connect_error')) toast('Instagram connection failed: '+callback.get('connect_error'),'err');
   if(callback.has('connected')) toast('Instagram connection updated.');
+  if(callback.has('signed_in')) toast(callback.has('new') ? 'Welcome! Your Instagram account is connected.' : 'Signed in with Instagram.');
   go(callback.has('connected') || callback.has('connect_error') ? 'onboarding' : state.me?.onboarding_complete ? 'dashboard' : 'onboarding');
-  if(callback.has('connected') || callback.has('connect_error')) history.replaceState(null,'',location.pathname);
+  if(callback.has('connected') || callback.has('connect_error') || callback.has('signed_in')) history.replaceState(null,'',location.pathname);
 }
 /* ============================== theme (light/dark) ============================== */
 function renderThemeToggle() {
