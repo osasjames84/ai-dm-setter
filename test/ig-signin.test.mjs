@@ -14,6 +14,7 @@ import path from 'node:path';
 import os from 'node:os';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const OWNER = 'owner@example.test';
@@ -135,6 +136,12 @@ try {
     assert.equal(r.location, '/?signed_in=instagram');
     const me = (await api(r.cookie)('GET', '/api/me')).json;
     assert.equal(me.account.id, 'acc_1'); assert.equal(me.user.email, OWNER); assert.equal(me.user.is_platform_admin, true);
+    // Sign-in must not replace the working IG_PAGE_TOKEN connection with a login token.
+    const db = new DatabaseSync(path.join(DATA, 'dmsetter.sqlite'), { readOnly: true });
+    const row = db.prepare("SELECT business_id, token_enc, status FROM instagram_accounts WHERE account_id = 'acc_1'").get();
+    db.close();
+    assert.equal(row.token_enc, null, 'acc_1 still sends with the env token');
+    assert.equal(row.business_id, ENV_BIZ); assert.equal(row.status, 'connected');
   });
   await test('connect mode still refuses an Instagram account that belongs to another workspace', async () => {
     const r = await callback(await startState('/auth/instagram/start', coachCookie), 'jd');

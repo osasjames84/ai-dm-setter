@@ -532,6 +532,19 @@ initEvents({
   }
   // The env-token Instagram account belongs to acc_1 until OAuth replaces it.
   if (process.env.IG_BUSINESS_ID) db.prepare('INSERT OR IGNORE INTO instagram_accounts (account_id, business_id, status, updated_at) VALUES (?, ?, ?, ?)').run(FIRST_ACCOUNT_ID, String(process.env.IG_BUSINESS_ID), 'connected', new Date().toISOString());
+  // One-time repair (17 Oct 2026): the first "Continue with Instagram" sign-in
+  // replaced acc_1's working env token with a login token, and sends failed.
+  // Put acc_1 back on IG_PAGE_TOKEN; sign-in no longer touches it.
+  try {
+    const flag = '_restore_env_ig_v1';
+    const done = db.prepare('SELECT 1 FROM account_settings WHERE account_id = ? AND key = ?').get(FIRST_ACCOUNT_ID, flag);
+    if (!done && process.env.IG_PAGE_TOKEN && process.env.IG_BUSINESS_ID) {
+      const n = db.prepare("UPDATE instagram_accounts SET token_enc = NULL, business_id = ?, status = 'connected', last_error = NULL, updated_at = ? WHERE account_id = ? AND token_enc IS NOT NULL AND updated_at >= '2026-10-17'")
+        .run(String(process.env.IG_BUSINESS_ID), new Date().toISOString(), FIRST_ACCOUNT_ID).changes;
+      db.prepare('INSERT OR REPLACE INTO account_settings (account_id, key, value) VALUES (?, ?, ?)').run(FIRST_ACCOUNT_ID, flag, '1');
+      if (n) console.log('[instagram] acc_1 restored to the IG_PAGE_TOKEN connection');
+    }
+  } catch (e) { console.error('[instagram] env token restore failed:', e.message); }
   // Same for an env-token Facebook Page (Messenger) until one is connected in Settings.
   if (process.env.FB_PAGE_ID) db.prepare('INSERT OR IGNORE INTO messenger_pages (account_id, page_id, status, updated_at) VALUES (?, ?, ?, ?)').run(FIRST_ACCOUNT_ID, String(process.env.FB_PAGE_ID), 'connected', new Date().toISOString());
 }
@@ -2967,6 +2980,9 @@ async function storeIgConnection(accountId, userId, got) {
   });
 }
 
+/** Does this account send through the IG_PAGE_TOKEN env var (first account only)? */
+const envIgConnection = (accountId) => accountId === FIRST_ACCOUNT_ID && !!process.env.IG_PAGE_TOKEN && !!process.env.IG_BUSINESS_ID;
+
 /**
  * Sign in with Instagram: the workspace that already has this Instagram account
  * signs in as its owner; an unknown account gets a new workspace (pending
@@ -2984,7 +3000,9 @@ async function signInWithInstagram(got) {
     db.prepare('INSERT INTO users (id, account_id, email, role, created_at) VALUES (?, ?, ?, ?, ?)').run(id, accountId, placeholderEmailFor(got.businessId), 'owner', nowIso());
     user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   }
-  await storeIgConnection(accountId, user.id, got);
+  // The first workspace's env-token connection (IG_PAGE_TOKEN) is the operator's
+  // known-good setup: signing in never replaces it. Everyone else gets a fresh token.
+  if (!envIgConnection(accountId)) await storeIgConnection(accountId, user.id, got);
   audit(accountId, user.id, created ? 'signup:instagram' : 'signin:instagram', '@' + (got.username || got.businessId));
   return { session: openSession(user), created };
 }
