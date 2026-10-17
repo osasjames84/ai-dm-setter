@@ -31,6 +31,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---- stub Graph API ---------------------------------------------------------
 const sends = [];
+const takes = [];                       // take_thread_control calls (conversation routing)
 let n = 0;
 const graph = http.createServer((req, res) => {
   let raw = '';
@@ -48,6 +49,8 @@ const graph = http.createServer((req, res) => {
       if (rid === 'L_rl') return json(400, { error: { message: 'Application request limit reached', type: 'OAuthException', code: 4 } });
       if (rid === 'L_window') return json(400, { error: { message: 'This message is sent outside of allowed window.', type: 'OAuthException', code: 10, error_subcode: 2534022 } });
       if (rid === 'L_hang') { req.socket.destroy(); return; }
+      // ManyChat/Stan owns L_owned's thread until we take control.
+      if (rid === 'L_owned' && !takes.includes('L_owned')) return json(400, { error: { message: "The action is invalid since it's not the thread owner.", type: 'IGApiException', code: 100, error_subcode: 2534037 } });
       return json(200, { recipient_id: rid, message_id: 'out_' + (++n) });
     }
     if (req.method === 'GET' && url.pathname === '/' + BIZ) return json(200, { id: BIZ, username: 'test_business' });
@@ -58,6 +61,7 @@ const graph = http.createServer((req, res) => {
         : json(400, { error: { message: 'Invalid OAuth access token.', type: 'OAuthException', code: 190 } });
     }
     if (req.method === 'POST' && /^\/\d+\/subscribed_apps$/.test(url.pathname)) return json(200, { success: true });
+    if (req.method === 'POST' && url.pathname === '/me/take_thread_control') { takes.push(JSON.parse(raw || '{}').recipient?.id); return json(200, { success: true }); }
     if (req.method === 'GET' && url.pathname === '/P_named') return json(200, { first_name: 'Ada', last_name: 'Lovelace' });
     if (req.method === 'GET') return json(200, {});
     json(404, { error: { message: 'unknown', code: 100 } });
@@ -169,6 +173,26 @@ try {
     // Its echo is recognised as ours, not stored twice.
     await webhook(msgEvent('L1', row.mid, 'Hey! What is your main goal right now?', { echo: true })); await sleep(250);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM messages WHERE mid = ?').get(row.mid).n, 1);
+  });
+  await test('thread owned by ManyChat/Stan: we take control and the send goes through once', async () => {
+    const c = await lead('L_owned'); const before = sendsTo('L_owned').length;
+    const r = await api('POST', `/api/conversations/${c.id}/send`, { text: 'Hey, saw you messaged about coaching' });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.deepEqual(takes, ['L_owned']);
+    const mine = sendsTo('L_owned').slice(before);
+    assert.equal(mine.length, 2, 'refused once, then sent after taking control');
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM messages WHERE conversation_id = ? AND role = 'setter'").get(c.id).n, 1, 'stored once');
+    assert.equal(conv('L_owned').needs_human, 0, 'no leftover flag');
+  });
+  await test('standby message (thread owned by another app) is stored; AI off means we do not take control', async () => {
+    await webhook({ object: 'instagram', entry: [{ id: BIZ, time: Date.now(), standby: [
+      { sender: { id: 'L_standby' }, recipient: { id: BIZ }, timestamp: Date.now(), message: { mid: 'mid_sb1', text: 'replying to the ManyChat keyword' } },
+    ] }] });
+    const c = await until(() => conv('L_standby'));
+    assert.ok(c, 'conversation created from standby');
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM messages WHERE mid = ?').get('mid_sb1').n, 1);
+    if (c.mode === 'off') assert.ok(!takes.includes('L_standby'), 'AI off: no takeover');
+    else assert.ok(await until(() => takes.includes('L_standby')), 'AI on: took control');
   });
   await test('manual send with an idempotency key twice (double click) sends once', async () => {
     const c = conv('L1'); const before = sendsTo('L1').length;

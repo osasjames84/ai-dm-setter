@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { PERSONAS, PERSONA_BY_ID } from './lib/personas.js';
-import { igConfigured, igVerifyWebhook, igParseInbound, igSendText, igSendAudio, igSendAction, igProfile, igStatus, igFetchHistory, onIgAuthError, setCredsResolver, igOauthConfigured, igAuthUrl, igCompleteOauth, igRefreshToken, igSubscribeApp, IG_SCOPES, IgSendError, igWindowOpen, setOutboundContextResolver, setSendPolicyResolver, onIgSendIssue } from './lib/instagram.js';
+import { igConfigured, igVerifyWebhook, igParseInbound, igSendText, igSendAudio, igSendAction, igProfile, igStatus, igFetchHistory, onIgAuthError, setCredsResolver, igOauthConfigured, igAuthUrl, igCompleteOauth, igRefreshToken, igSubscribeApp, igTakeThreadControl, IG_SCOPES, IgSendError, igWindowOpen, setOutboundContextResolver, setSendPolicyResolver, onIgSendIssue } from './lib/instagram.js';
 import { fbConfigured, fbSendText, fbSendAudio, fbSendAction, fbParseInbound, fbVerifyWebhook, fbPageInfo, fbSubscribePage, fbStatus, fbProfile, setFbCredsResolver, setFbOutboundContextResolver, onFbAuthError, onFbSendIssue } from './lib/messenger.js';
 import { initCrypto, encrypt, decrypt } from './lib/crypto.js';
 import { generateMove, varyMessage, applyOutboundFilter, stripDashes, buildSystemPrompt, anthropicClient, PROMPT_SECTIONS } from './lib/engine.js';
@@ -641,7 +641,7 @@ function fbPausedReason(accountId) {
  * sends, typing indicator, voice notes, 24h window, pause on reconnect).
  */
 const META_CHANNELS = {
-  instagram: { label: 'Instagram', configured: () => igConfigured(), sendText: igSendText, sendAudio: igSendAudio, sendAction: igSendAction, paused: (a) => igPausedReason(a) },
+  instagram: { label: 'Instagram', configured: () => igConfigured(), sendText: igSendText, sendAudio: igSendAudio, sendAction: igSendAction, takeControl: igTakeThreadControl, paused: (a) => igPausedReason(a) },
   messenger: { label: 'Messenger', configured: () => fbConfigured(), sendText: fbSendText, sendAudio: fbSendAudio, sendAction: fbSendAction, paused: (a) => fbPausedReason(a) },
 };
 const metaChannel = (conv) => (conv && Object.prototype.hasOwnProperty.call(META_CHANNELS, conv.channel) ? META_CHANNELS[conv.channel] : null);
@@ -1203,8 +1203,17 @@ async function deliver(conv, text, source, opts = {}) {
     }
     if (source !== 'human') inFlightSends.set(String(conv.external_id), Date.now() + 20_000);
     const key = opts.idempotencyKey || (source === 'human' ? 'human:' + newId() : sendKey(conv, source, filtered.text));
-    const out = await igSendOnce(conv, key, 'text', sha(normForDedupe(filtered.text)),
+    let out = await igSendOnce(conv, key, 'text', sha(normForDedupe(filtered.text)),
       () => ch.sendText(conv.external_id, filtered.text, { source }));
+    // Another app (ManyChat, Stan...) owns the thread: take it over and retry once.
+    if (!out.ok && out.kind === 'thread_owner' && ch.takeControl) {
+      const took = await ch.takeControl(conv.external_id);
+      console.log(took.ok ? `[routing] took thread control for conv ${conv.id}, retrying the send` : `[routing] could not take thread control for conv ${conv.id}: ${took.error}`);
+      if (took.ok) {
+        out = await igSendOnce(conv, key + ':retake', 'text', sha(normForDedupe(filtered.text)), () => ch.sendText(conv.external_id, filtered.text, { source }));
+        if (out.ok) db.prepare("UPDATE conversations SET needs_human = 0, needs_human_reason = NULL WHERE id = ? AND needs_human_reason = 'another app controls this conversation'").run(conv.id);
+      }
+    }
     if (!out.ok) { inFlightSends.delete(String(conv.external_id)); return out; }
     if (out.deduped) { console.log(`[idempotency] send already done for conv ${conv.id}, skipped`); return { ok: true, deduped: true }; }
     sentMid = out.mid;
@@ -3419,6 +3428,7 @@ app.post('/webhook/messenger', async (req, res) => {
 // What differs per channel when a webhook event arrives.
 const IG_INBOUND = {
   channel: 'instagram', keyPrefix: '', label: 'Instagram',
+  takeControl: (leadId) => igTakeThreadControl(leadId),
   // Unknown ids fall back to the first account only while it still runs on the env token.
   accountFor: (bid) => accountForBusinessId(bid) || (process.env.IG_PAGE_TOKEN ? FIRST_ACCOUNT_ID : null),
   configured: () => igConfigured(),
@@ -3501,11 +3511,18 @@ async function processMetaEvent(ev, inbound) {
         }
       } else {
         onLeadMessage(conv.id, ev.timestamp);
+        // Another app (ManyChat, Stan...) owns this thread, typically after its
+        // keyword reply. The lead answering is our cue: if the AI is on for this
+        // conversation, take the thread over and run the turn. If Meta refuses
+        // (no "Take control" permission), keep the message and do nothing else.
+        let took = null;
         if (ev.standby) {
-          // Another app (ManyChat, Stan...) owns this thread: Meta refuses our
-          // replies there, so keep the message but don't start an AI turn.
-          console.log(`[webhook] standby message stored for conv ${conv.id}: another app owns the thread, no AI turn`);
-        } else {
+          took = conv.mode && conv.mode !== 'off' && inbound.takeControl ? await inbound.takeControl(ev.leadId) : { ok: false, error: 'AI is off for this conversation' };
+          console.log(took.ok
+            ? `[routing] took thread control for conv ${conv.id} from another app`
+            : `[routing] standby message stored for conv ${conv.id}: another app owns the thread (${took.error})`);
+        }
+        if (!ev.standby || took?.ok) {
           await maybeFireVoiceNote(conv, ev.text); // Audio Arsenal: the LEAD's keyword can fire a voice note too
           scheduler.onInboundLead(conv.id); // autopilot/copilot turn (mode-aware)
         }
