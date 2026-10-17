@@ -3375,8 +3375,16 @@ function verifyWebhookSignature(req) {
     } catch { return false; }
   });
 }
+/** Content-free note of a webhook whose signature matched neither app secret (which product sent it). */
+function logRejectedWebhook(path, req) {
+  const b = req.body || {};
+  const entries = Array.isArray(b.entry) ? b.entry : [];
+  const kinds = entries.flatMap((e) => [...(e.messaging ? ['messaging'] : []), ...(Array.isArray(e.changes) ? e.changes.map((c) => 'changes:' + c.field) : [])]);
+  const echo = entries.some((e) => (e.messaging || []).some((m) => m.message?.is_echo));
+  console.warn(`[webhook] ${path} rejected: signature matches no app secret (object=${b.object || '?'}, entry=${entries.map((e) => e.id).join('|') || '?'}, ${kinds.join(',') || 'no events'}${echo ? ', echo' : ''})`);
+}
 app.post('/webhook/instagram', async (req, res) => {
-  if (!verifyWebhookSignature(req)) return res.sendStatus(403); // reject spoofed webhooks
+  if (!verifyWebhookSignature(req)) { logRejectedWebhook('instagram', req); return res.sendStatus(403); } // reject spoofed webhooks
   res.sendStatus(200);
   let events = [];
   // entry.id → the professional account id we have on file (OAuth rows), else the env id.
