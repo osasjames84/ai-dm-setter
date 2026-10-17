@@ -56,12 +56,12 @@ Save. The redirect URI must match exactly, including `https` and no trailing sla
 2. **Callback URL**: `https://<domain>/webhook/instagram`
 3. **Verify token**: the exact value of `IG_VERIFY_TOKEN` on Railway (make one with `openssl rand -hex 24`). Set it on Railway and redeploy **before** clicking Verify.
 4. Click **Verify and save**. Meta sends a GET with a challenge; dmSetter echoes it only when the token matches.
-5. In the webhook fields list, **subscribe to `messages`**. That single field carries incoming messages and the echoes of messages the business sends from the Instagram app. dmSetter needs nothing else; do not subscribe to `comments`, `mentions` or other fields. (dmSetter ignores read receipts, reactions and typing events even if they arrive.)
+5. In the webhook fields list, **subscribe to `messages`, `standby` and `messaging_handover`**. `messages` carries incoming messages and the echoes of messages the business sends from the Instagram app. `standby` carries the same for threads another connected app (ManyChat, Stan and so on) currently controls, so the inbox stays complete; dmSetter shows those but does not reply in them. Do not subscribe to `comments`, `mentions` or other fields. (dmSetter ignores read receipts, reactions and typing events even if they arrive.)
 6. Webhook payloads are signed. dmSetter verifies `X-Hub-Signature-256` with `IG_APP_SECRET` and, if you set it, `META_APP_SECRET` (the **App secret** under App settings, Basic). Set both to be safe; a 403 in the logs for `/webhook/instagram` means neither matched.
 
 Note: in Development mode, Meta only delivers message webhooks for accounts that have a role on the app (testers). That is expected until the app is Live with Advanced Access.
 
-When a business connects through Instagram Login, dmSetter also subscribes that account to the `messages` field automatically (`POST /<ig-user-id>/subscribed_apps`).
+When a business connects through Instagram Login, dmSetter also subscribes that account to `messages`, `standby` and `messaging_handover` automatically (`POST /<ig-user-id>/subscribed_apps`).
 
 ## 5. Railway environment variables
 
