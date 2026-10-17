@@ -2570,6 +2570,7 @@ function parkedMessage(reason) {
   if (reason === 'instagram not connected') return 'Not sent: Instagram is not connected.';
   if (reason === 'messenger needs reconnect') return 'Not sent: Messenger needs reconnecting. Open Settings and reconnect your Facebook Page.';
   if (reason === 'messenger not connected') return 'Not sent: Messenger is not connected.';
+  if (reason === 'another app controls this conversation') return 'Not sent: another app connected to your Instagram (ManyChat or Stan) is handling this conversation. Reply from the Instagram app, or turn off "Take control of conversations" for that app in Meta Business Suite, Settings, Conversation routing.';
   return 'Not sent: ' + reason + '.';
 }
 
@@ -3500,8 +3501,14 @@ async function processMetaEvent(ev, inbound) {
         }
       } else {
         onLeadMessage(conv.id, ev.timestamp);
-        await maybeFireVoiceNote(conv, ev.text); // Audio Arsenal: the LEAD's keyword can fire a voice note too
-        scheduler.onInboundLead(conv.id); // autopilot/copilot turn (mode-aware)
+        if (ev.standby) {
+          // Another app (ManyChat, Stan...) owns this thread: Meta refuses our
+          // replies there, so keep the message but don't start an AI turn.
+          console.log(`[webhook] standby message stored for conv ${conv.id}: another app owns the thread, no AI turn`);
+        } else {
+          await maybeFireVoiceNote(conv, ev.text); // Audio Arsenal: the LEAD's keyword can fire a voice note too
+          scheduler.onInboundLead(conv.id); // autopilot/copilot turn (mode-aware)
+        }
       }
       });
       } catch (e) {

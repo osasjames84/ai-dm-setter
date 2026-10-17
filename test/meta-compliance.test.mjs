@@ -139,6 +139,22 @@ await test('account settings can tighten limits but not loosen them past the saf
 
 // ---- Meta error codes --------------------------------------------------------
 const graphErr = (code, subcode, message = 'x', type = 'OAuthException') => ({ error: { message, type, code, error_subcode: subcode } });
+await test('another app owning the thread parks the send with a clear reason', () => {
+  const c = classifyGraphError(400, JSON.stringify({ error: { message: "The action is invalid since it's not the thread owner.", type: 'IGApiException', code: 100, error_subcode: 2534037 } }));
+  assert.equal(c.kind, 'thread_owner');
+  const e = new IgSendError(c.kind, c.message);
+  assert.equal(e.park, true); assert.equal(e.reason, 'another app controls this conversation');
+});
+await test('standby messages (thread owned by another app) are parsed and marked', () => {
+  const body = { object: 'instagram', entry: [{ id: '9', time: 1, standby: [
+    { sender: { id: 'L1' }, recipient: { id: '9' }, timestamp: 1, message: { mid: 'm1', text: 'hi from a ManyChat thread' } },
+    { sender: { id: '9' }, recipient: { id: 'L1' }, timestamp: 2, message: { mid: 'm2', text: 'ManyChat reply', is_echo: true } },
+  ] }] };
+  const ev = igParseInbound(body, () => '9');
+  assert.equal(ev.length, 2);
+  assert.ok(ev.every((e) => e.standby === true && e.leadId === 'L1'));
+  assert.deepEqual(ev.map((e) => e.direction), ['in', 'out']);
+});
 await test('classifyGraphError maps Meta codes', () => {
   const k = (status, body) => classifyGraphError(status, JSON.stringify(body)).kind;
   assert.equal(k(400, graphErr(10, 2534022, 'This message is sent outside of allowed window.')), 'outside_window');
