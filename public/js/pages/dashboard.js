@@ -252,30 +252,28 @@ const revAgo = (iso) => {
   const h = Math.round(m / 60); if (h < 24) return h + (h === 1 ? ' hour ago' : ' hours ago');
   const d = Math.round(h / 24); return d === 1 ? 'Yesterday' : d + ' days ago';
 };
-/** Stripe-style line: straight segments, faint vertical grid, value pills at the start and the peak, end dot. */
+/** Line chart of pipeline added per day/month in the dashboard's accent: straight segments, faint grid, end dot. */
 function revenueChart(r) {
   const s = r.series || [];
   if (!s.length) return '';
-  const W = 640, H = 170, top = 34, base = H - 22, padX = 8;
+  const W = 640, H = 150, top = 14, base = H - 20, padX = 6;
   const max = Math.max(...s.map((p) => p.value), 0);
   const x = (i) => s.length === 1 ? W / 2 : padX + (i / (s.length - 1)) * (W - 2 * padX);
   const y = (v) => max > 0 ? base - (v / max) * (base - top) : base;
   const pts = s.map((p, i) => [x(i), y(p.value)]);
   const every = s.length <= 12 ? 1 : Math.ceil(s.length / 7);
-  const grid = s.map((p, i) => (i % every === 0 || i === s.length - 1) ? '<line x1="' + x(i).toFixed(1) + '" x2="' + x(i).toFixed(1) + '" y1="' + (top - 10) + '" y2="' + base + '" class="rev-grid"/>' : '').join('');
-  const peak = max > 0 ? s.findIndex((p) => p.value === max) : -1;
-  // Keep value pills inside the card: left-align near the left edge, right-align near the right edge.
-  const edge = (i) => x(i) / W < 0.14 ? ' at-left' : x(i) / W > 0.86 ? ' at-right' : '';
-  const pill = (i, cls) => '<div class="rev-pill ' + cls + edge(i) + '" style="left:' + (x(i) / W * 100).toFixed(2) + '%;top:' + (y(s[i].value) / H * 100).toFixed(2) + '%">' + esc(revMoney(s[i].value, r.currency)) + '</div>';
+  const grid = s.map((p, i) => (i % every === 0 || i === s.length - 1) ? '<line x1="' + x(i).toFixed(1) + '" x2="' + x(i).toFixed(1) + '" y1="' + top + '" y2="' + base + '" class="rev-grid"/>' : '').join('');
+  const last = pts[pts.length - 1];
   const data = esc(JSON.stringify(s.map((p, i) => [pts[i][0], pts[i][1], revBucketLabel(p.key, r.unit), p.value, p.booked])));
-  return '<div class="rev-chart" data-points="' + data + '" data-cur="' + esc(r.currency) + '">' +
+  return '<div class="rev-chart" data-points="' + data + '" data-cur="' + esc(r.currency) + '"><div class="rev-plot">' +
     '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="Pipeline added per ' + r.unit + '">' +
+    '<defs><linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--c-accent)" stop-opacity=".18"/><stop offset="1" stop-color="var(--c-accent)" stop-opacity="0"/></linearGradient></defs>' +
     grid + '<line x1="0" x2="' + W + '" y1="' + base + '" y2="' + base + '" class="rev-base"/>' +
+    '<polygon points="' + pts.map((p) => p.map((v) => v.toFixed(1)).join(',')).join(' ') + ' ' + last[0].toFixed(1) + ',' + base + ' ' + pts[0][0].toFixed(1) + ',' + base + '" fill="url(#revFill)"/>' +
     '<polyline points="' + pts.map((p) => p.map((v) => v.toFixed(1)).join(',')).join(' ') + '" class="rev-line"/>' +
-    '<line class="rev-cursor" x1="0" x2="0" y1="' + (top - 10) + '" y2="' + base + '" style="display:none"/></svg>' +
-    '<span class="rev-end" style="left:' + (pts[pts.length - 1][0] / W * 100).toFixed(2) + '%;top:' + (pts[pts.length - 1][1] / H * 100).toFixed(2) + '%"></span>' +
-    pill(0, '') + (peak > 0 ? pill(peak, '') : '') +
-    '<div class="rev-tip" hidden></div>' +
+    '<line class="rev-cursor" x1="0" x2="0" y1="' + top + '" y2="' + base + '" style="display:none"/></svg>' +
+    '<span class="rev-end" style="left:' + (last[0] / W * 100).toFixed(2) + '%;top:' + (last[1] / H * 100).toFixed(2) + '%"></span>' +
+    '<div class="rev-tip" hidden></div></div>' +
     '<div class="rev-axis"><span>' + esc(revBucketLabel(s[0].key, r.unit)) + '</span><span>' + esc(r.unit === 'day' ? 'Today' : revBucketLabel(s[s.length - 1].key, r.unit)) + '</span></div></div>';
 }
 function renderRevenueCard(r) {
@@ -286,41 +284,41 @@ function renderRevenueCard(r) {
   // Stripe-style ranges: the year shows on the end date, and on the start date when it differs.
   const thisYear = String(new Date().getFullYear());
   const curRange = revDate(r.range.start, r.range.start.slice(0, 4) !== thisYear) + ' – Today';
-  const prevRange = r.previous_range ? revDate(r.previous_range.start, r.previous_range.start.slice(0, 4) !== r.previous_range.end.slice(0, 4)) + ' – ' + revDate(r.previous_range.end, true) : 'No earlier period';
-  const pct = (a, b) => b > 0 ? Math.round((a / b) * 1000) / 10 + '%' : '—';
+  const prevRange = r.previous_range ? revDate(r.previous_range.start, r.previous_range.start.slice(0, 4) !== r.previous_range.end.slice(0, 4)) + ' – ' + revDate(r.previous_range.end, true) : '';
+  const pct = (a, b) => b > 0 ? Math.round((a / b) * 1000) / 10 + '%' : '–';
+  const delta = r.change_pct === null || r.change_pct === undefined ? '' :
+    '<span class="tag ' + (r.change_pct >= 0 ? 'green' : 'red') + '">' + (r.change_pct >= 0 ? '+' : '') + r.change_pct + '%</span>';
   const edit = state.revEditing ? '<form class="rev-edit-form" id="rev-form">' +
     '<label>Average deal value (' + esc(cur) + ')<input id="rev-deal" inputmode="decimal" placeholder="e.g. 2000" value="' + esc(r.deal_value || '') + '"></label>' +
     '<label>Close rate on booked calls (%)<input id="rev-rate" inputmode="decimal" placeholder="25" value="' + esc(r.close_rate_set ? r.close_rate : '') + '"></label>' +
     '<div class="rev-edit-actions"><button class="btn btn-primary btn-sm" type="submit">Save</button><button class="btn btn-ghost btn-sm" type="button" id="rev-cancel">Cancel</button></div>' +
     '<p class="rev-err" id="rev-err" role="alert"></p></form>' : '';
   const flow = [
-    { label: 'Conversations', value: String(r.conversations) },
-    { label: 'Booked calls', value: String(r.booked), conv: pct(r.booked, r.conversations) },
-    { label: 'Pipeline', value: noValue ? '—' : revMoney(r.pipeline, cur, 0), conv: noValue ? '' : '× ' + revMoney(r.deal_value, cur, 0), money: true },
-    { label: 'Won (est.)', value: noValue ? '—' : revMoney(r.estimated, cur, 0), conv: r.close_rate + '%', money: true },
+    { label: 'Conversations', value: String(r.conversations), sub: 'started' },
+    { label: 'Booked calls', value: String(r.booked), sub: pct(r.booked, r.conversations) + ' of conversations' },
+    { label: 'Pipeline', value: noValue ? '–' : revMoney(r.pipeline, cur, 0), sub: noValue ? 'set a deal value' : '× ' + revMoney(r.deal_value, cur, 0) + ' per call' },
+    { label: 'Won (estimated)', value: noValue ? '–' : revMoney(r.estimated, cur, 0), sub: r.close_rate + '% close rate' },
   ];
-  const feed = (r.recent || []).length ? r.recent.map((b) => {
-    const initials = String(b.name || '?').replace(/^@/, '').split(/[\s._]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
-    const what = b.stage === 'sale' ? 'became a client' : 'booked a call';
-    const amt = b.value ? (b.stage === 'sale' ? revMoney(b.value, cur, 0) + ' won' : '+' + revMoney(b.value, cur, 0)) : '';
-    return '<div class="rev-item"><span class="rev-av">' + esc(initials) + '</span><div class="rev-item-t">' + esc(b.name) + ' ' + what +
-      '<span>' + esc(revAgo(b.at)) + ' · ' + esc(b.channel === 'messenger' ? 'Messenger' : 'Instagram') + '</span></div>' + (amt ? '<span class="rev-amt">' + esc(amt) + '</span>' : '') + '</div>';
-  }).join('') : '<p class="rev-empty">New bookings show up here as soon as a lead books a call.</p>';
-  return '<section class="card rev-card" aria-label="Revenue overview">' +
-    '<div class="rev-head"><h2>Revenue overview</h2>' + (owner ? '<button class="rev-edit-btn" id="rev-edit" type="button">' + (noValue ? 'Set deal value' : 'Edit') + '</button>' : '') + '</div>' +
-    '<div class="rev-pills" role="tablist" aria-label="Period">' + REV_PERIODS.map((p) => '<button type="button" role="tab" class="rev-pill-btn' + (p === r.period ? ' on' : '') + '" aria-selected="' + (p === r.period) + '" data-revperiod="' + p + '">' + p + '</button>').join('') + '</div>' +
+  const feed = (r.recent || []).slice(0, 5).map((b) => {
+    const amt = b.value ? (b.stage === 'sale' ? revMoney(b.value, cur, 0) + ' won' : '+' + revMoney(b.value, cur, 0)) : (b.stage === 'sale' ? 'Sale' : 'Booked');
+    return '<div class="perf-row"><span>' + esc(b.name) + ' ' + (b.stage === 'sale' ? 'became a client' : 'booked a call') + ' · ' + esc(revAgo(b.at)) + '</span><span>' + esc(amt) + '</span></div>';
+  }).join('');
+  return '<div class="card pipeline-card rev-card">' +
+    '<div class="rev-head"><div class="pipe-title">Revenue</div>' +
+      '<div class="rev-controls"><div class="rev-periods" role="tablist" aria-label="Period">' + REV_PERIODS.map((p) => '<button type="button" role="tab" class="chip' + (p === r.period ? ' on' : '') + '" aria-selected="' + (p === r.period) + '" data-revperiod="' + p + '">' + p + '</button>').join('') + '</div>' +
+      (owner ? '<button class="btn btn-ghost btn-sm" id="rev-edit" type="button">' + (noValue ? 'Set deal value' : 'Edit') + '</button>' : '') + '</div></div>' +
     edit +
-    '<div class="rev-body"><div class="rev-main">' +
-      '<div class="rev-title">Pipeline generated</div>' +
-      '<div class="rev-compare">' +
-        '<div class="rev-prev"><div class="rev-num">' + (r.previous ? (noValue ? r.previous.booked + ' calls' : revMoney(r.previous.pipeline, cur)) : '—') + '</div><div class="rev-range">' + esc(prevRange) + '</div></div>' +
-        '<div class="rev-cur"><div class="rev-num">' + (noValue ? r.booked + ' calls' : revMoney(r.pipeline, cur)) + '</div><div class="rev-range">' + esc(curRange) + '</div></div>' +
-      '</div>' +
-      (noValue ? '<p class="rev-hint">Add your average deal value to see these calls as money.</p>' : revenueChart(r)) +
-      '<div class="rev-flow">' + flow.map((f) => '<div class="rev-step' + (f.money ? ' money' : '') + '">' + (f.conv ? '<span class="rev-conv">' + esc(f.conv) + '</span>' : '') + '<div class="rev-step-l">' + f.label + '</div><div class="rev-step-v">' + esc(f.value) + '</div></div>').join('') + '</div>' +
+    '<div class="pipe-section">Pipeline generated</div>' +
+    '<div class="rev-compare">' +
+      '<div><div class="rev-num">' + (noValue ? r.booked + (r.booked === 1 ? ' call' : ' calls') : revMoney(r.pipeline, cur)) + ' ' + delta + '</div><div class="rev-range">' + esc(curRange) + '</div></div>' +
+      (r.previous ? '<div class="rev-prev"><div class="rev-prev-l">Previous period</div><div class="rev-prev-n">' + (noValue ? r.previous.booked + ' calls' : revMoney(r.previous.pipeline, cur)) + '</div><div class="rev-range">' + esc(prevRange) + '</div></div>' : '') +
     '</div>' +
-    '<aside class="rev-feed"><h3>Latest bookings</h3>' + feed + '</aside></div>' +
-  '</section>';
+    (noValue ? '<p class="rev-hint">Add your average deal value to see these calls as money.</p>' : revenueChart(r)) +
+    '<div class="pipe-section" style="margin-top:20px">From DM to revenue</div>' +
+    '<div class="rev-flow">' + flow.map((f) => '<div class="stage-cell"><div class="st-label">' + f.label + '</div><div class="st-num">' + esc(f.value) + '</div><div class="rev-flow-sub">' + esc(f.sub) + '</div></div>').join('') + '</div>' +
+    '<div class="pipe-section" style="margin-top:20px">Latest bookings</div>' +
+    (feed || '<div class="perf-row perf-ok">New bookings show up here as soon as a lead books a call.</div>') +
+  '</div>';
 }
 function bindRevenueCard() {
   const card = $('#dash-page .rev-card');
@@ -352,7 +350,7 @@ function bindRevenueCard() {
     line.setAttribute('x1', best[0]); line.setAttribute('x2', best[0]); line.style.display = '';
     tip.innerHTML = '<b>' + esc(revMoney(best[3], cur)) + '</b><span>' + esc(best[2]) + ' · ' + best[4] + ' booked</span>';
     tip.style.left = Math.min(Math.max((best[0] / 640) * box.width, 70), box.width - 70) + 'px';
-    tip.style.top = ((best[1] / 170) * box.height) + 'px'; tip.hidden = false;
+    tip.style.top = ((best[1] / 150) * box.height) + 'px'; tip.hidden = false;
   });
   chart.addEventListener('pointerleave', () => { tip.hidden = true; line.style.display = 'none'; });
 }
