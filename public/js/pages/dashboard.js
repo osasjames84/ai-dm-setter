@@ -2,7 +2,7 @@
 /* ============================== dashboard ============================== */
 async function loadDashboard() {
   const q = state.statsDays ? '?days=' + state.statsDays : '';
-  try { [state.stats, state.revenue] = await Promise.all([api('/api/stats' + q), api('/api/revenue' + q).catch(() => state.revenue || null)]); }
+  try { [state.stats, state.revenue] = await Promise.all([api('/api/stats' + q), api('/api/revenue?period=' + (state.revPeriod || 'MTD')).catch(() => state.revenue || null)]); }
   catch (e) {
     if (state.route === 'dashboard' && !state.stats) {
       const page = $('#dash-page');
@@ -236,100 +236,123 @@ function countUpStats(nodes) {
   requestAnimationFrame(tick);
 }
 
-/* ============================== revenue card (Stripe-style) ============================== */
+/* ============================== revenue card (Stripe "Reports overview" + money flow) ============================== */
+const REV_PERIODS = ['1W', '4W', '1Y', 'MTD', 'QTD', 'YTD', 'ALL'];
 const revMoney = (n, cur, dp = 2) => {
   try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency: cur || 'GBP', minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
   catch { return (Number(n) || 0).toFixed(dp); }
 };
-const revDay = (iso) => new Date(iso + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-/** Smooth area chart of cumulative pipeline value; hover shows the day's figure. */
-function revenueChart(series, cur) {
-  if (!series || series.length < 2) return '';
-  const W = 640, H = 150, P = 6;
-  const max = Math.max(1, ...series.map((p) => p.value));
-  const pts = series.map((p, i) => [P + (i / (series.length - 1)) * (W - 2 * P), H - P - (p.value / max) * (H - 2 * P - 10)]);
-  // Catmull-Rom to cubic Bézier, clamped so the curve never overshoots below the baseline.
-  let d = 'M' + pts[0][0].toFixed(1) + ' ' + pts[0][1].toFixed(1);
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
-    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, Math.min(H - P, p1[1] + (p2[1] - p0[1]) / 6)];
-    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, Math.min(H - P, p2[1] - (p3[1] - p1[1]) / 6)];
-    d += ' C' + c1.map((v) => v.toFixed(1)).join(' ') + ' ' + c2.map((v) => v.toFixed(1)).join(' ') + ' ' + p2.map((v) => v.toFixed(1)).join(' ');
-  }
-  const area = d + ' L' + pts[pts.length - 1][0].toFixed(1) + ' ' + (H - P) + ' L' + pts[0][0].toFixed(1) + ' ' + (H - P) + ' Z';
-  const data = esc(JSON.stringify(series.map((p, i) => [pts[i][0], pts[i][1], p.date, p.value, p.booked])));
-  return '<div class="rev-chart" data-points="' + data + '" data-cur="' + esc(cur) + '">' +
-    '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="Pipeline value over time">' +
-    '<defs><linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--c-accent)" stop-opacity=".28"/><stop offset="100%" stop-color="var(--c-accent)" stop-opacity="0"/></linearGradient></defs>' +
-    '<line x1="0" x2="' + W + '" y1="' + (H - P) + '" y2="' + (H - P) + '" class="rev-base"/>' +
-    '<path d="' + area + '" fill="url(#revFill)"/><path d="' + d + '" class="rev-line"/>' +
-    '<line class="rev-cursor" x1="0" x2="0" y1="0" y2="' + H + '" style="display:none"/><circle class="rev-dot" r="4" cx="0" cy="0" style="display:none"/></svg>' +
+const revDate = (ymd, withYear) => new Date(ymd + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(withYear ? { year: 'numeric' } : {}), timeZone: 'UTC' });
+const revBucketLabel = (key, unit) => unit === 'month'
+  ? new Date(key + '-15T12:00:00Z').toLocaleDateString('en-GB', { month: 'short', year: 'numeric', timeZone: 'UTC' })
+  : revDate(key, false);
+const revAgo = (iso) => {
+  const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  if (m < 60) return m <= 1 ? 'Just now' : m + ' min ago';
+  const h = Math.round(m / 60); if (h < 24) return h + (h === 1 ? ' hour ago' : ' hours ago');
+  const d = Math.round(h / 24); return d === 1 ? 'Yesterday' : d + ' days ago';
+};
+/** Stripe-style line: straight segments, faint vertical grid, value pills at the start and the peak, end dot. */
+function revenueChart(r) {
+  const s = r.series || [];
+  if (!s.length) return '';
+  const W = 640, H = 170, top = 34, base = H - 22, padX = 8;
+  const max = Math.max(...s.map((p) => p.value), 0);
+  const x = (i) => s.length === 1 ? W / 2 : padX + (i / (s.length - 1)) * (W - 2 * padX);
+  const y = (v) => max > 0 ? base - (v / max) * (base - top) : base;
+  const pts = s.map((p, i) => [x(i), y(p.value)]);
+  const every = s.length <= 12 ? 1 : Math.ceil(s.length / 7);
+  const grid = s.map((p, i) => (i % every === 0 || i === s.length - 1) ? '<line x1="' + x(i).toFixed(1) + '" x2="' + x(i).toFixed(1) + '" y1="' + (top - 10) + '" y2="' + base + '" class="rev-grid"/>' : '').join('');
+  const peak = max > 0 ? s.findIndex((p) => p.value === max) : -1;
+  // Keep value pills inside the card: left-align near the left edge, right-align near the right edge.
+  const edge = (i) => x(i) / W < 0.14 ? ' at-left' : x(i) / W > 0.86 ? ' at-right' : '';
+  const pill = (i, cls) => '<div class="rev-pill ' + cls + edge(i) + '" style="left:' + (x(i) / W * 100).toFixed(2) + '%;top:' + (y(s[i].value) / H * 100).toFixed(2) + '%">' + esc(revMoney(s[i].value, r.currency)) + '</div>';
+  const data = esc(JSON.stringify(s.map((p, i) => [pts[i][0], pts[i][1], revBucketLabel(p.key, r.unit), p.value, p.booked])));
+  return '<div class="rev-chart" data-points="' + data + '" data-cur="' + esc(r.currency) + '">' +
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="Pipeline added per ' + r.unit + '">' +
+    grid + '<line x1="0" x2="' + W + '" y1="' + base + '" y2="' + base + '" class="rev-base"/>' +
+    '<polyline points="' + pts.map((p) => p.map((v) => v.toFixed(1)).join(',')).join(' ') + '" class="rev-line"/>' +
+    '<line class="rev-cursor" x1="0" x2="0" y1="' + (top - 10) + '" y2="' + base + '" style="display:none"/></svg>' +
+    '<span class="rev-end" style="left:' + (pts[pts.length - 1][0] / W * 100).toFixed(2) + '%;top:' + (pts[pts.length - 1][1] / H * 100).toFixed(2) + '%"></span>' +
+    pill(0, '') + (peak > 0 ? pill(peak, '') : '') +
     '<div class="rev-tip" hidden></div>' +
-    '<div class="rev-axis"><span>' + esc(revDay(series[0].date)) + '</span><span>' + esc(revDay(series[series.length - 1].date)) + '</span></div></div>';
+    '<div class="rev-axis"><span>' + esc(revBucketLabel(s[0].key, r.unit)) + '</span><span>' + esc(r.unit === 'day' ? 'Today' : revBucketLabel(s[s.length - 1].key, r.unit)) + '</span></div></div>';
 }
 function renderRevenueCard(r) {
   if (!r) return '';
   const owner = state.me?.user?.role === 'owner';
   const cur = r.currency || 'GBP';
-  const period = r.all_time ? 'all time' : r.days === 1 ? 'today' : 'last ' + r.days + ' days';
   const noValue = !(r.deal_value > 0);
-  const delta = r.change_pct === null || r.change_pct === undefined ? '' :
-    '<span class="rev-delta ' + (r.change_pct >= 0 ? 'up' : 'down') + '">' + (r.change_pct >= 0 ? '▲ ' : '▼ ') + Math.abs(r.change_pct) + '%</span>';
+  // Stripe-style ranges: the year shows on the end date, and on the start date when it differs.
+  const thisYear = String(new Date().getFullYear());
+  const curRange = revDate(r.range.start, r.range.start.slice(0, 4) !== thisYear) + ' – Today';
+  const prevRange = r.previous_range ? revDate(r.previous_range.start, r.previous_range.start.slice(0, 4) !== r.previous_range.end.slice(0, 4)) + ' – ' + revDate(r.previous_range.end, true) : 'No earlier period';
+  const pct = (a, b) => b > 0 ? Math.round((a / b) * 1000) / 10 + '%' : '—';
   const edit = state.revEditing ? '<form class="rev-edit-form" id="rev-form">' +
     '<label>Average deal value (' + esc(cur) + ')<input id="rev-deal" inputmode="decimal" placeholder="e.g. 2000" value="' + esc(r.deal_value || '') + '"></label>' +
     '<label>Close rate on booked calls (%)<input id="rev-rate" inputmode="decimal" placeholder="25" value="' + esc(r.close_rate_set ? r.close_rate : '') + '"></label>' +
     '<div class="rev-edit-actions"><button class="btn btn-primary btn-sm" type="submit">Save</button><button class="btn btn-ghost btn-sm" type="button" id="rev-cancel">Cancel</button></div>' +
     '<p class="rev-err" id="rev-err" role="alert"></p></form>' : '';
-  const tiles = [
-    { label: 'Estimated revenue won', value: revMoney(r.estimated, cur), sub: 'at a ' + r.close_rate + '% close rate', cls: 'pos' },
-    { label: 'Confirmed sales', value: revMoney(r.confirmed, cur), sub: r.sales + (r.sales === 1 ? ' sale' : ' sales') + ' marked in Messages' },
-    { label: 'Booked calls', value: String(r.booked), sub: r.previous ? r.previous.booked + ' in the previous period' : period },
+  const flow = [
+    { label: 'Conversations', value: String(r.conversations) },
+    { label: 'Booked calls', value: String(r.booked), conv: pct(r.booked, r.conversations) },
+    { label: 'Pipeline', value: noValue ? '—' : revMoney(r.pipeline, cur, 0), conv: noValue ? '' : '× ' + revMoney(r.deal_value, cur, 0), money: true },
+    { label: 'Won (est.)', value: noValue ? '—' : revMoney(r.estimated, cur, 0), conv: r.close_rate + '%', money: true },
   ];
-  return '<section class="card rev-card" aria-label="Revenue">' +
-    '<div class="rev-main">' +
-      '<div class="rev-top"><div class="rev-label">Pipeline generated <span class="rev-period">' + esc(period) + '</span></div>' +
-      (owner ? '<button class="rev-edit-btn" id="rev-edit" type="button">' + (noValue ? 'Set deal value' : 'Edit assumptions') + '</button>' : '') + '</div>' +
-      (noValue
-        ? '<div class="rev-big rev-muted">' + revMoney(0, cur) + '</div><div class="rev-sub">' + r.booked + ' booked call' + (r.booked === 1 ? '' : 's') + '. Add your average deal value to see the pipeline the AI has generated.</div>'
-        : '<div class="rev-big" data-rev="' + r.pipeline + '">' + revMoney(r.pipeline, cur) + delta + '</div>' +
-          '<div class="rev-sub">' + r.booked + ' booked call' + (r.booked === 1 ? '' : 's') + ' × ' + revMoney(r.deal_value, cur, 0) + ' average deal' + (r.previous ? ' · ' + revMoney(r.previous.pipeline, cur) + ' previous period' : '') + '</div>') +
-      edit +
-      (noValue ? '' : revenueChart(r.series, cur)) +
+  const feed = (r.recent || []).length ? r.recent.map((b) => {
+    const initials = String(b.name || '?').replace(/^@/, '').split(/[\s._]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
+    const what = b.stage === 'sale' ? 'became a client' : 'booked a call';
+    const amt = b.value ? (b.stage === 'sale' ? revMoney(b.value, cur, 0) + ' won' : '+' + revMoney(b.value, cur, 0)) : '';
+    return '<div class="rev-item"><span class="rev-av">' + esc(initials) + '</span><div class="rev-item-t">' + esc(b.name) + ' ' + what +
+      '<span>' + esc(revAgo(b.at)) + ' · ' + esc(b.channel === 'messenger' ? 'Messenger' : 'Instagram') + '</span></div>' + (amt ? '<span class="rev-amt">' + esc(amt) + '</span>' : '') + '</div>';
+  }).join('') : '<p class="rev-empty">New bookings show up here as soon as a lead books a call.</p>';
+  return '<section class="card rev-card" aria-label="Revenue overview">' +
+    '<div class="rev-head"><h2>Revenue overview</h2>' + (owner ? '<button class="rev-edit-btn" id="rev-edit" type="button">' + (noValue ? 'Set deal value' : 'Edit') + '</button>' : '') + '</div>' +
+    '<div class="rev-pills" role="tablist" aria-label="Period">' + REV_PERIODS.map((p) => '<button type="button" role="tab" class="rev-pill-btn' + (p === r.period ? ' on' : '') + '" aria-selected="' + (p === r.period) + '" data-revperiod="' + p + '">' + p + '</button>').join('') + '</div>' +
+    edit +
+    '<div class="rev-body"><div class="rev-main">' +
+      '<div class="rev-title">Pipeline generated</div>' +
+      '<div class="rev-compare">' +
+        '<div class="rev-prev"><div class="rev-num">' + (r.previous ? (noValue ? r.previous.booked + ' calls' : revMoney(r.previous.pipeline, cur)) : '—') + '</div><div class="rev-range">' + esc(prevRange) + '</div></div>' +
+        '<div class="rev-cur"><div class="rev-num">' + (noValue ? r.booked + ' calls' : revMoney(r.pipeline, cur)) + '</div><div class="rev-range">' + esc(curRange) + '</div></div>' +
+      '</div>' +
+      (noValue ? '<p class="rev-hint">Add your average deal value to see these calls as money.</p>' : revenueChart(r)) +
+      '<div class="rev-flow">' + flow.map((f) => '<div class="rev-step' + (f.money ? ' money' : '') + '">' + (f.conv ? '<span class="rev-conv">' + esc(f.conv) + '</span>' : '') + '<div class="rev-step-l">' + f.label + '</div><div class="rev-step-v">' + esc(f.value) + '</div></div>').join('') + '</div>' +
     '</div>' +
-    '<div class="rev-side">' + tiles.map((t) => '<div class="rev-tile"><div class="rev-tile-label">' + t.label + '</div><div class="rev-tile-value' + (t.cls ? ' ' + t.cls : '') + '">' + t.value + '</div><div class="rev-tile-sub">' + esc(t.sub) + '</div></div>').join('') + '</div>' +
+    '<aside class="rev-feed"><h3>Latest bookings</h3>' + feed + '</aside></div>' +
   '</section>';
 }
 function bindRevenueCard() {
   const card = $('#dash-page .rev-card');
   if (!card) return;
+  card.querySelectorAll('[data-revperiod]').forEach((b) => b.addEventListener('click', async () => {
+    state.revPeriod = b.dataset.revperiod;
+    try { state.revenue = await api('/api/revenue?period=' + state.revPeriod); renderDashboard(true); } catch (e) { toast(e.message, 'err'); }
+  }));
   card.querySelector('#rev-edit')?.addEventListener('click', () => { state.revEditing = !state.revEditing; renderDashboard(true); $('#rev-deal')?.focus(); });
   card.querySelector('#rev-cancel')?.addEventListener('click', () => { state.revEditing = false; renderDashboard(true); });
   card.querySelector('#rev-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = e.currentTarget.querySelector('button[type=submit]'); btn.disabled = true;
-    const deal = $('#rev-deal').value.trim(), rate = $('#rev-rate').value.trim();
     try {
-      await api('/api/settings', { method: 'PUT', body: { client_value: deal, close_rate: rate } });
+      await api('/api/settings', { method: 'PUT', body: { client_value: $('#rev-deal').value.trim(), close_rate: $('#rev-rate').value.trim() } });
       state.revEditing = false; document.activeElement?.blur();
-      state.revenue = await api('/api/revenue' + (state.statsDays ? '?days=' + state.statsDays : ''));
+      state.revenue = await api('/api/revenue?period=' + (state.revPeriod || 'MTD'));
       renderDashboard(true); toast('Revenue assumptions saved');
     } catch (err) { $('#rev-err').textContent = err.message; btn.disabled = false; }
   });
   const chart = card.querySelector('.rev-chart');
   if (!chart) return;
   const pts = JSON.parse(chart.dataset.points || '[]'), cur = chart.dataset.cur;
-  const svg = chart.querySelector('svg'), tip = chart.querySelector('.rev-tip'), line = chart.querySelector('.rev-cursor'), dot = chart.querySelector('.rev-dot');
-  const hide = () => { tip.hidden = true; line.style.display = dot.style.display = 'none'; };
+  const svg = chart.querySelector('svg'), tip = chart.querySelector('.rev-tip'), line = chart.querySelector('.rev-cursor');
   chart.addEventListener('pointermove', (ev) => {
     const box = svg.getBoundingClientRect(); if (!box.width || !pts.length) return;
-    const x = ((ev.clientX - box.left) / box.width) * 640;
-    let best = pts[0]; for (const p of pts) if (Math.abs(p[0] - x) < Math.abs(best[0] - x)) best = p;
-    line.setAttribute('x1', best[0]); line.setAttribute('x2', best[0]); dot.setAttribute('cx', best[0]); dot.setAttribute('cy', best[1]);
-    line.style.display = dot.style.display = '';
-    tip.innerHTML = '<b>' + esc(revMoney(best[3], cur)) + '</b><span>' + esc(revDay(best[2])) + ' · ' + best[4] + ' booked</span>';
-    tip.hidden = false;
-    const left = (best[0] / 640) * box.width;
-    tip.style.left = Math.min(Math.max(left, 60), box.width - 60) + 'px';
+    const xv = ((ev.clientX - box.left) / box.width) * 640;
+    let best = pts[0]; for (const p of pts) if (Math.abs(p[0] - xv) < Math.abs(best[0] - xv)) best = p;
+    line.setAttribute('x1', best[0]); line.setAttribute('x2', best[0]); line.style.display = '';
+    tip.innerHTML = '<b>' + esc(revMoney(best[3], cur)) + '</b><span>' + esc(best[2]) + ' · ' + best[4] + ' booked</span>';
+    tip.style.left = Math.min(Math.max((best[0] / 640) * box.width, 70), box.width - 70) + 'px';
+    tip.style.top = ((best[1] / 170) * box.height) + 'px'; tip.hidden = false;
   });
-  chart.addEventListener('pointerleave', hide);
+  chart.addEventListener('pointerleave', () => { tip.hidden = true; line.style.display = 'none'; });
 }

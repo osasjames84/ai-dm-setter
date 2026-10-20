@@ -8,6 +8,7 @@ import { applyOutboundFilter, stripDashes, buildSystemPrompt } from '../lib/engi
 import { followupLadder, withinMessagingWindow, normalizeStep, interpolateName, firstNameOf } from '../lib/scheduler.js';
 import { matchExactPhrase } from '../lib/triggers.js';
 import { igParseInbound } from '../lib/instagram.js';
+import { periodRange, buckets, localDate } from '../lib/revenue.js';
 import { initCrypto, encrypt, decrypt } from '../lib/crypto.js';
 import { runMigrations } from '../lib/migrations.js';
 import { parseProfile, profileNote } from '../lib/profile.js';
@@ -135,6 +136,20 @@ test('live streams: capped per account, closed by session, user or account', () 
   const d = fake(); openStream('acc_y', req(), d, { userId: 'u4', sessionHash: 's4' });
   assert.equal(closeStreams({ accountId: 'acc_y' }), 1); assert.equal(d.ended, true);
   initEvents({ revalidateMs: 3_600_000, validate: null });
+});
+test('revenue periods match Stripe: MTD compares with the same days of last month, UK midnight', () => {
+  const tz = 'Europe/London', now = Date.parse('2026-10-20T15:30:00Z');
+  const mtd = periodRange('MTD', now, tz);
+  assert.equal(new Date(mtd.start).toISOString(), '2026-09-30T23:00:00.000Z', 'midnight 1 Oct in BST');
+  assert.equal(localDate(mtd.prevStart, tz), '2026-09-01'); assert.equal(localDate(mtd.prevEnd - 1, tz), '2026-09-20');
+  const w = periodRange('1W', now, tz); assert.equal(localDate(w.start, tz), '2026-10-14'); assert.equal(localDate(w.prevStart, tz), '2026-10-07');
+  const ytd = periodRange('YTD', now, tz); assert.equal(localDate(ytd.prevStart, tz), '2025-01-01');
+  const all = periodRange('ALL', now, tz, Date.parse('2026-04-10T10:00:00Z')); assert.equal(all.prevStart, null); assert.equal(localDate(all.start, tz), '2026-04-10');
+  assert.equal(buckets(mtd.start, now, tz).list.length, 20); assert.equal(buckets(mtd.start, now, tz).unit, 'day');
+  assert.equal(buckets(periodRange('1Y', now, tz).start, now, tz).unit, 'month');
+  // Month-end capping: on 31 March, the previous MTD period stops at the end of February.
+  const m31 = periodRange('MTD', Date.parse('2027-03-31T12:00:00Z'), tz);
+  assert.equal(localDate(m31.prevEnd - 1, tz), '2027-02-28');
 });
 console.log(failed ? `\n${failed} failing` : '\nall green');
 process.exit(failed ? 1 : 0);

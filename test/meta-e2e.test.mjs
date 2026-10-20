@@ -194,27 +194,32 @@ try {
     if (c.mode === 'off') assert.ok(!takes.includes('L_standby'), 'AI off: no takeover');
     else assert.ok(await until(() => takes.includes('L_standby')), 'AI on: took control');
   });
-  await test('revenue card: pipeline = booked calls x deal value, estimate = pipeline x close rate, sims and false positives excluded', async () => {
+  await test('revenue card: Stripe periods, pipeline = booked x deal value, estimate = x close rate, sims and false positives excluded', async () => {
     const ev = db.prepare('INSERT OR IGNORE INTO stage_events (conversation_id, stage, at, account_id) VALUES (?, ?, ?, ?)');
     const ago = (d) => new Date(Date.now() - d * 86400_000).toISOString();
     const a = await lead('L_rev1'), b = await lead('L_rev2'), fp = await lead('L_rev3'), old = await lead('L_rev4');
-    ev.run(a.id, 'call_booked', ago(2), 'acc_1'); ev.run(b.id, 'call_booked', ago(5), 'acc_1'); ev.run(b.id, 'sale', ago(1), 'acc_1');
-    ev.run(fp.id, 'call_booked', ago(3), 'acc_1'); db.prepare('UPDATE conversations SET false_positive = 1 WHERE id = ?').run(fp.id);
-    ev.run(old.id, 'call_booked', ago(10), 'acc_1');   // previous 7-day period
-    const before = (await api('GET', '/api/revenue?days=7')).json;
-    assert.equal(before.deal_value, 0, 'no deal value yet');
+    ev.run(a.id, 'call_booked', ago(1), 'acc_1'); ev.run(b.id, 'call_booked', ago(3), 'acc_1'); ev.run(b.id, 'sale', ago(0.5), 'acc_1');
+    ev.run(fp.id, 'call_booked', ago(2), 'acc_1'); db.prepare('UPDATE conversations SET false_positive = 1 WHERE id = ?').run(fp.id);
+    ev.run(old.id, 'call_booked', ago(10), 'acc_1');   // previous 1W period
+    const before = (await api('GET', '/api/revenue?period=1W')).json;
+    assert.equal(before.period, '1W'); assert.equal(before.deal_value, 0, 'no deal value yet');
     const saved = await api('PUT', '/api/settings', { client_value: '£2,000', close_rate: '25%' });
     assert.equal(saved.status, 200, JSON.stringify(saved.json));
-    const r = (await api('GET', '/api/revenue?days=7')).json;
+    const r = (await api('GET', '/api/revenue?period=1W')).json;
     assert.equal(r.deal_value, 2000); assert.equal(r.close_rate, 25);
     assert.equal(r.booked, 2, 'false positive excluded'); assert.equal(r.pipeline, 4000); assert.equal(r.estimated, 1000);
     assert.equal(r.sales, 1); assert.equal(r.confirmed, 2000);
-    assert.equal(r.previous.booked, 1); assert.equal(r.change_pct, 100);
-    assert.equal(r.series.length, 7); assert.equal(r.series.at(-1).value, 4000, 'cumulative series ends at the pipeline total');
-    const all = (await api('GET', '/api/revenue')).json;
-    assert.equal(all.all_time, true); assert.equal(all.booked, 3); assert.equal(all.previous, null);
+    assert.equal(r.previous.booked, 1); assert.equal(r.previous.pipeline, 2000); assert.equal(r.change_pct, 100);
+    assert.equal(r.unit, 'day'); assert.equal(r.series.length, 7);
+    assert.equal(r.series.reduce((n, p) => n + p.value, 0), 4000, 'per-day pipeline adds up to the total');
+    assert.ok(r.previous_range && r.range.start, 'ranges for the Stripe-style labels');
+    assert.ok(r.conversations >= 4); assert.equal(r.recent[0].stage, 'sale', 'latest booking event first');
+    assert.ok(!r.recent.some((x) => x.name.includes('L_rev3')), 'false positives stay out of the feed');
+    const all = (await api('GET', '/api/revenue?period=ALL')).json;
+    assert.equal(all.period, 'ALL'); assert.equal(all.booked, 3); assert.equal(all.previous, null); assert.equal(all.previous_range, null);
+    assert.equal((await api('GET', '/api/revenue?period=nonsense')).json.period, 'MTD', 'unknown period falls back to MTD');
     assert.equal((await api('PUT', '/api/settings', { close_rate: '250' })).status, 200);
-    assert.equal((await api('GET', '/api/revenue?days=7')).json.close_rate, 25, 'out-of-range close rate ignored');
+    assert.equal((await api('GET', '/api/revenue?period=1W')).json.close_rate, 25, 'out-of-range close rate ignored');
   });
   await test('manual send with an idempotency key twice (double click) sends once', async () => {
     const c = conv('L1'); const before = sendsTo('L1').length;
