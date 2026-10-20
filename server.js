@@ -261,6 +261,7 @@ const SETTING_DEFAULTS = {
   test_drive_passed_at: '',         // ISO timestamp of the last passed test drive (onboarding step 5)
   test_drive_passed_version: '',    // prompt version that test drive ran on; a script change invalidates the step
   client_value: '',                 // average value of one sale (analytics revenue estimate), in the account currency
+  close_rate: '',                   // percent of booked calls the owner closes (dashboard revenue-won estimate), 0-100
   groq_api_key: '',                 // per-account Groq key for voice-note transcription (secret; server GROQ_API_KEY is the fallback)
   end_on_question: '1',             // a live turn must end with a question or next step; the engine retries once when the model ends flat
   lead_profiles: '1',               // keep a per-lead profile (goal, blocker, budget signal) and feed it to the AI
@@ -2216,6 +2217,11 @@ app.put('/api/settings', requireAdmin, requireOwner, (req, res) => {
     // Guard the two enum-ish settings so downstream never sees garbage.
     if (k === 'default_mode' && !MODES.includes(v)) continue;
     if (k === 'kill_switch') v = v === '1' || v === 'true' ? '1' : '0';
+    if (k === 'close_rate' && v.trim() !== '') {
+      const n = Number(v);
+      if (!Number.isFinite(n)) continue;
+      v = String(Math.min(100, Math.max(0, n)));
+    }
     setSetting(k, v);
   }
   maybeRefreshCalendly(); // pick up a new token / toggle immediately
@@ -2893,6 +2899,25 @@ app.get('/api/stats', requireAdmin, (req, res) => {
      GROUP BY reason ORDER BY n DESC LIMIT 6`
   ).all(A);
 
+  // ---- roi: booked calls in the dashboard's range x average client value is the
+  // pipeline generated; x close rate is the revenue won. Estimates from settings,
+  // not collected payments. A sale counts as booked (it went through a call).
+  const bookedCalls = db.prepare(
+    "SELECT COUNT(DISTINCT conversation_id) c FROM stage_events WHERE account_id = ? AND stage IN ('call_booked','sale')" + (cutoff ? ' AND at >= ?' : '')
+  ).get(...(cutoff ? [A, cutoff] : [A])).c;
+  const roiValue = Number(getSetting('client_value')) || 0;
+  const closeRateRaw = String(getSetting('close_rate') ?? '').trim();
+  const closeRate = closeRateRaw === '' || !Number.isFinite(Number(closeRateRaw)) ? null : Math.min(100, Math.max(0, Number(closeRateRaw)));
+  const pipeline = Math.round(bookedCalls * roiValue * 100) / 100;
+  const roi = {
+    booked_calls: bookedCalls,
+    client_value: roiValue,
+    close_rate: closeRate,
+    currency: getSetting('currency') || 'GBP',
+    pipeline,
+    revenue_won: closeRate == null ? null : Math.round(pipeline * closeRate) / 100,
+  };
+
   res.json({
     leads_today: leadsToday,
     qualification_rate: total ? Math.round((everQualified / total) * 100) : 0,
@@ -2907,6 +2932,7 @@ app.get('/api/stats', requireAdmin, (req, res) => {
     in_followup: inFollowup,
     by_stage: byStage,
     reached,
+    roi,                           // {booked_calls, client_value, close_rate|null, currency, pipeline, revenue_won|null}
     reply_latency: replyLatency,   // {ai: sec|null, human: sec|null} median lead→setter reply time (30d)
     stage_aging: stageAging,       // {stage: count} conversations stalled >48h in each active stage
     flag_reasons: flagReasons,     // [{reason, n}] top 6 needs_human reasons (first 30 chars)

@@ -220,6 +220,22 @@ try {
     const b = (await jd.api('GET', '/api/analytics?days=7')).json;
     assert.equal(b.timezone_source, 'server'); assert.ok(b.timezone);
   });
+  await test('dashboard ROI: booked calls x client value, then x close rate', async () => {
+    await jd.api('PUT', '/api/settings', { client_value: '', close_rate: '' });
+    const none = (await jd.api('GET', '/api/stats')).json.roi;
+    assert.equal(none.client_value, 0); assert.equal(none.close_rate, null); assert.equal(none.revenue_won, null);
+    const c = (await jd.api('POST', '/api/sim/spawn', { handle: 'roi_lead' })).json;
+    assert.equal((await jd.api('PATCH', '/api/conversations/' + c.id, { stage: 'call_booked' })).status, 200);
+    await jd.api('PUT', '/api/settings', { client_value: '500', close_rate: '150' });
+    const s = (await jd.api('GET', '/api/settings')).json.settings; assert.equal(s.close_rate, '100', 'close rate is clamped to 100');
+    await jd.api('PUT', '/api/settings', { close_rate: '25' });
+    const r = (await jd.api('GET', '/api/stats?days=7')).json.roi;
+    assert.ok(r.booked_calls >= 1, 'booked call counted');
+    assert.equal(r.pipeline, r.booked_calls * 500); assert.equal(r.close_rate, 25); assert.equal(r.revenue_won, r.booked_calls * 125);
+    await jd.api('PUT', '/api/settings', { close_rate: 'abc' });
+    assert.equal((await jd.api('GET', '/api/settings')).json.settings.close_rate, '25', 'a non-number close rate is ignored');
+    await jd.api('PUT', '/api/settings', { client_value: '', close_rate: '' });
+  });
   await test('events stream says hello', async () => {
     const ev = await openEvents(srv, jd.cookie); assert.equal(ev.status, 200); ev.close();
   });
