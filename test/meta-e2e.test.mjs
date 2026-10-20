@@ -194,6 +194,28 @@ try {
     if (c.mode === 'off') assert.ok(!takes.includes('L_standby'), 'AI off: no takeover');
     else assert.ok(await until(() => takes.includes('L_standby')), 'AI on: took control');
   });
+  await test('revenue card: pipeline = booked calls x deal value, estimate = pipeline x close rate, sims and false positives excluded', async () => {
+    const ev = db.prepare('INSERT OR IGNORE INTO stage_events (conversation_id, stage, at, account_id) VALUES (?, ?, ?, ?)');
+    const ago = (d) => new Date(Date.now() - d * 86400_000).toISOString();
+    const a = await lead('L_rev1'), b = await lead('L_rev2'), fp = await lead('L_rev3'), old = await lead('L_rev4');
+    ev.run(a.id, 'call_booked', ago(2), 'acc_1'); ev.run(b.id, 'call_booked', ago(5), 'acc_1'); ev.run(b.id, 'sale', ago(1), 'acc_1');
+    ev.run(fp.id, 'call_booked', ago(3), 'acc_1'); db.prepare('UPDATE conversations SET false_positive = 1 WHERE id = ?').run(fp.id);
+    ev.run(old.id, 'call_booked', ago(10), 'acc_1');   // previous 7-day period
+    const before = (await api('GET', '/api/revenue?days=7')).json;
+    assert.equal(before.deal_value, 0, 'no deal value yet');
+    const saved = await api('PUT', '/api/settings', { client_value: '£2,000', close_rate: '25%' });
+    assert.equal(saved.status, 200, JSON.stringify(saved.json));
+    const r = (await api('GET', '/api/revenue?days=7')).json;
+    assert.equal(r.deal_value, 2000); assert.equal(r.close_rate, 25);
+    assert.equal(r.booked, 2, 'false positive excluded'); assert.equal(r.pipeline, 4000); assert.equal(r.estimated, 1000);
+    assert.equal(r.sales, 1); assert.equal(r.confirmed, 2000);
+    assert.equal(r.previous.booked, 1); assert.equal(r.change_pct, 100);
+    assert.equal(r.series.length, 7); assert.equal(r.series.at(-1).value, 4000, 'cumulative series ends at the pipeline total');
+    const all = (await api('GET', '/api/revenue')).json;
+    assert.equal(all.all_time, true); assert.equal(all.booked, 3); assert.equal(all.previous, null);
+    assert.equal((await api('PUT', '/api/settings', { close_rate: '250' })).status, 200);
+    assert.equal((await api('GET', '/api/revenue?days=7')).json.close_rate, 25, 'out-of-range close rate ignored');
+  });
   await test('manual send with an idempotency key twice (double click) sends once', async () => {
     const c = conv('L1'); const before = sendsTo('L1').length;
     const [a, b] = await Promise.all([1, 2].map(() => api('POST', `/api/conversations/${c.id}/send`, { text: 'Quick one', idempotency_key: 'compose-123' })));
