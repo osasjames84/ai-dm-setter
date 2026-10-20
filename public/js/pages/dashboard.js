@@ -117,6 +117,32 @@ function renderPerfCard(st) {
     '<div class="perf-grid">' + latencyHtml + agingHtml + reasonsHtml + '</div>' +
     '</div>';
 }
+/* ROI hero, the first thing a coach sees: pipeline = booked calls x average
+   client value; revenue won = pipeline x close rate. Both inputs live in
+   Settings, so until a client value is set this asks for it instead of
+   showing £0. Estimates only — payments never pass through dmSetter. */
+function fmtMoney(n, currency) {
+  try { return new Intl.NumberFormat(undefined, { style: 'currency', currency: currency || 'GBP', maximumFractionDigits: 0 }).format(n); }
+  catch { return (currency || '') + ' ' + Math.round(n).toLocaleString(); }
+}
+function renderRoi(st) {
+  const r = st.roi;
+  if (!r) return '';
+  if (!r.client_value) {
+    return '<div class="card roi-setup">' + icon('trendup', 18) +
+      '<span>Add your <b>average client value</b> and <b>close rate</b> in Settings to see the revenue your DMs bring in.</span>' +
+      '<button class="btn btn-ghost" data-roisettings>Open Settings</button></div>';
+  }
+  const calls = r.booked_calls + ' booked call' + (r.booked_calls === 1 ? '' : 's') + ' × ' + fmtMoney(r.client_value, r.currency);
+  const won = r.revenue_won == null
+    ? '<div class="roi-num roi-empty">—</div><div class="s-sub"><button class="roi-link" data-roisettings>Set your close rate</button> to estimate this</div>'
+    : '<div class="roi-num">' + esc(fmtMoney(r.revenue_won, r.currency)) + '</div><div class="s-sub">At your ' + esc(r.close_rate) + '% close rate</div>';
+  return '<div class="roi-grid" title="Estimates from your settings, not collected payments">' +
+    '<div class="card roi-card"><div class="roi-head"><span class="s-label">Pipeline generated</span><span class="icon-chip">' + icon('target', 18) + '</span></div>' +
+    '<div class="roi-num">' + esc(fmtMoney(r.pipeline, r.currency)) + '</div><div class="s-sub">' + esc(calls) + '</div></div>' +
+    '<div class="card roi-card"><div class="roi-head"><span class="s-label">Estimated revenue won</span><span class="icon-chip">' + icon('trendup', 18) + '</span></div>' +
+    won + '</div></div>';
+}
 function renderDashboard() {
   const st = state.stats;
   if (!st) return;
@@ -141,6 +167,8 @@ function renderDashboard() {
       const p = o.split('|');
       return '<option value="' + p[0] + '"' + (state.statsDays === p[0] ? ' selected' : '') + '>' + p[1] + '</option>';
     }).join('') + '</select></div></div>' +
+
+    renderRoi(st) +
 
     '<div class="stat-grid">' + cards.map((c) =>
       '<div class="card stat-card' + (c.nav ? ' stat-nav' : '') + '"' + (c.nav ? ' data-statnav="' + c.nav + '" title="Open in Messages"' : '') + '>' +
@@ -189,6 +217,7 @@ function renderDashboard() {
     '<span>Pending drafts <b>' + st.pending_drafts + '</b></span>' +
     '</div>';
 
+  $('#dash-page').querySelectorAll('[data-roisettings]').forEach((b) => b.addEventListener('click', () => go('settings')));
   $('#range-sel').addEventListener('change', (e) => { state.statsDays = e.target.value; e.target.blur(); loadDashboard(); });
   $('#dash-page').querySelectorAll('[data-gostage]').forEach((b) => b.addEventListener('click', () => {
     state.filterStage = b.dataset.gostage; state.filterFlagged = false; renderChips(); go('messages');

@@ -552,6 +552,19 @@ button:active:not(:disabled) { transform: translateY(1px); }
   color: var(--c-danger); font-size: var(--fs-sm); font-weight: 600;
 }
 .err-banner svg { flex-shrink: 0; }
+.roi-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
+.roi-card { padding: 22px 24px; background: linear-gradient(180deg, var(--c-success-soft), transparent 75%), var(--card-bg); box-shadow: var(--card-shadow), inset 0 0 0 1px var(--c-success-border); }
+.roi-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.roi-head .s-label { font-size: var(--fs-sm); line-height: 20px; font-weight: 600; color: var(--c-text-muted); }
+.roi-card .icon-chip { background: var(--c-success-soft); color: var(--c-success); }
+.roi-num { font-size: 44px; font-weight: 800; line-height: 52px; margin: 8px 0 4px; letter-spacing: -.04em; color: var(--c-success); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.roi-num.roi-empty { color: var(--c-text-faint); }
+.roi-card .s-sub { font-size: var(--fs-xs); line-height: 16px; color: var(--c-text-faint); font-weight: 500; }
+.roi-link { background: none; border: 0; padding: 0; font: inherit; color: var(--c-success); text-decoration: underline; cursor: pointer; }
+.roi-setup { display: flex; align-items: center; gap: 12px; padding: 16px 20px; margin-bottom: 16px; color: var(--c-text-muted); font-size: var(--fs-sm); box-shadow: var(--card-shadow), inset 0 0 0 1px var(--c-success-border); }
+.roi-setup > svg { color: var(--c-success); flex-shrink: 0; }
+.roi-setup span { flex: 1; }
+.roi-setup b { color: var(--c-text); }
 .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }
 .stat-card { padding: 20px; display: flex; justify-content: space-between; gap: 12px; transition: box-shadow var(--dur-base), transform var(--dur-base) var(--ease-out); }
 .stat-card.stat-nav { cursor: pointer; }
@@ -1782,6 +1795,11 @@ html.has-access-banner #main > section:not(#view-messages) { overflow: auto; min
   :is(#onboarding-page, #team-page, #operator-page, #analytics-page, #versions-page) > h1 { font-size: var(--fs-2xl); }
   .range-select, .dash-head .xsel, .dash-head .xsel-btn { width: 100%; }
   .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .roi-grid { grid-template-columns: 1fr; gap: 10px; margin-bottom: 10px; }
+  .roi-card { padding: 16px 18px; }
+  .roi-num { font-size: 36px; line-height: 42px; }
+  .roi-setup { flex-wrap: wrap; }
+  .roi-setup .btn { width: 100%; }
   .stat-card { padding: 14px; min-height: 0; }
   .stat-card .icon-chip { display: none; }
   .stat-card .s-num { font-size: 26px; line-height: 32px; }

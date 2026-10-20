@@ -282,6 +282,7 @@ function renderSettings() {
     const flagEnabledOut = {};
     $('#settings-page').querySelectorAll('[data-flagen]').forEach((el) => { flagEnabledOut[el.dataset.flagen] = !!el.querySelector('input').checked; });
     if(!$('#set-client-value').checkValidity()){toast('Average client value must be a non-negative number.','err');return;}
+    if(!$('#set-close-rate').checkValidity()){toast('Close rate must be a number from 0 to 100.','err');return;}
     const outbound = $('#set-outbound').value.split('\n').map((x) => x.trim()).filter(Boolean);
     const sbtn = $('#settings-save'); const sprev = sbtn.textContent; sbtn.disabled = true; sbtn.textContent = 'Saving…';
     try {
