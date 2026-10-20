@@ -580,11 +580,12 @@ button:active:not(:disabled) { transform: translateY(1px); }
 .stage-bar.is-max { background: var(--c-accent); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .2); }
 .totals-bars { display: grid; gap: 8px; }
 .stage-chat {
-  width: 32px; height: 32px; margin: 0 auto; border-radius: var(--radius-md); background: var(--c-surface-2);
-  color: var(--c-text-muted); display: flex; align-items: center; justify-content: center;
-  box-shadow: inset 0 0 0 1px var(--c-border); transition: background-color var(--dur-fast), color var(--dur-fast);
+  /* Same purple as the stat-card icon chips */
+  width: 32px; height: 32px; margin: 0 auto; border-radius: var(--radius-md); background: var(--c-accent-soft);
+  color: var(--c-accent-text); display: flex; align-items: center; justify-content: center;
+  box-shadow: none; transition: background-color var(--dur-fast), color var(--dur-fast);
 }
-.stage-chat:hover { background: var(--c-accent-soft); color: var(--c-accent-text); }
+.stage-chat:hover { background: var(--c-accent); color: var(--c-text-on-accent); }
 .totals-label { font-size: var(--fs-xs); font-weight: 500; color: var(--c-text-muted); margin: -6px 0 12px; }
 .funnel-labels { display: grid; grid-template-columns: repeat(8, 1fr); margin-bottom: 2px; }
 .funnel-labels .fl { text-align: center; }
