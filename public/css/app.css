@@ -1923,9 +1923,9 @@ html.has-access-banner #main > section:not(#view-messages) { overflow: auto; min
 .rev-chart svg { display: block; width: 100%; height: 150px; overflow: visible; cursor: crosshair; }
 .rev-grid { stroke: var(--c-border-subtle); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .rev-base { stroke: var(--c-border); stroke-width: 1; vector-effect: non-scaling-stroke; }
-.rev-line { fill: none; stroke: var(--c-accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.rev-line { fill: none; stroke: url(#revGrad); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .rev-cursor { stroke: var(--c-text-faint); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
-.rev-end { position: absolute; width: 8px; height: 8px; border-radius: 50%; background: var(--c-accent); box-shadow: 0 0 0 3px var(--c-accent-soft); transform: translate(-50%, -50%); pointer-events: none; }
+.rev-end { position: absolute; width: 9px; height: 9px; border-radius: 50%; background: var(--funnel-to); box-shadow: 0 0 0 3px var(--c-accent-soft); transform: translate(-50%, -50%); pointer-events: none; }
 .rev-tip { position: absolute; transform: translate(-50%, calc(-100% - 12px)); background: var(--card-bg); color: var(--c-text); box-shadow: var(--card-shadow), var(--shadow-md); border-radius: var(--radius-md); padding: 6px 10px; font-size: var(--fs-xs); white-space: nowrap; pointer-events: none; display: flex; flex-direction: column; gap: 1px; z-index: 2; }
 .rev-tip b { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 .rev-tip span { color: var(--c-text-muted); }

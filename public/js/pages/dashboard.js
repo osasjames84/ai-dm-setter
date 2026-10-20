@@ -267,9 +267,12 @@ function revenueChart(r) {
   const data = esc(JSON.stringify(s.map((p, i) => [pts[i][0], pts[i][1], revBucketLabel(p.key, r.unit), p.value, p.booked])));
   return '<div class="rev-chart" data-points="' + data + '" data-cur="' + esc(r.currency) + '"><div class="rev-plot">' +
     '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="Pipeline added per ' + r.unit + '">' +
-    '<defs><linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--c-accent)" stop-opacity=".18"/><stop offset="1" stop-color="var(--c-accent)" stop-opacity="0"/></linearGradient></defs>' +
+    // Same left-to-right gradient as the pipeline funnel ribbon; the fill fades out downwards.
+    '<defs><linearGradient id="revGrad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="' + W + '" y2="0"><stop offset="0%" stop-color="var(--funnel-from)"/><stop offset="100%" stop-color="var(--funnel-to)"/></linearGradient>' +
+    '<linearGradient id="revFade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".55"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>' +
+    '<mask id="revMask" maskUnits="userSpaceOnUse" x="0" y="0" width="' + W + '" height="' + H + '"><rect x="0" y="' + top + '" width="' + W + '" height="' + (base - top) + '" fill="url(#revFade)"/></mask></defs>' +
     grid + '<line x1="0" x2="' + W + '" y1="' + base + '" y2="' + base + '" class="rev-base"/>' +
-    '<polygon points="' + pts.map((p) => p.map((v) => v.toFixed(1)).join(',')).join(' ') + ' ' + last[0].toFixed(1) + ',' + base + ' ' + pts[0][0].toFixed(1) + ',' + base + '" fill="url(#revFill)"/>' +
+    '<polygon points="' + pts.map((p) => p.map((v) => v.toFixed(1)).join(',')).join(' ') + ' ' + last[0].toFixed(1) + ',' + base + ' ' + pts[0][0].toFixed(1) + ',' + base + '" fill="url(#revGrad)" mask="url(#revMask)"/>' +
     '<polyline points="' + pts.map((p) => p.map((v) => v.toFixed(1)).join(',')).join(' ') + '" class="rev-line"/>' +
     '<line class="rev-cursor" x1="0" x2="0" y1="' + top + '" y2="' + base + '" style="display:none"/></svg>' +
     '<span class="rev-end" style="left:' + (last[0] / W * 100).toFixed(2) + '%;top:' + (last[1] / H * 100).toFixed(2) + '%"></span>' +
