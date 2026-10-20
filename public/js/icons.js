@@ -52,6 +52,7 @@ const ICON_PATHS = {
   userplus: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6"/><path d="M22 11h-6"/>',
   robot: '<rect x="4.5" y="9" width="15" height="11" rx="2.5"/><path d="M12 9V5.5"/><circle cx="12" cy="4" r="1.5"/><path d="M9.2 14v1.4"/><path d="M14.8 14v1.4"/><path d="M2 13v3"/><path d="M22 13v3"/>',
   trendup: '<path d="M22 7 13.5 15.5 8.5 10.5 2 17"/><path d="M16 7h6v6"/>',
+  pound: '<path d="M18 7c0-5.333-8-5.333-8 0"/><path d="M10 7v14"/><path d="M6 21h12"/><path d="M6 13h10"/>',
 };
 function icon(name, size = 18) {
   const s = size;

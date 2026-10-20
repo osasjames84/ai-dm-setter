@@ -1930,16 +1930,14 @@ html.has-access-banner #main > section:not(#view-messages) { overflow: auto; min
 .rev-tip b { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 .rev-tip span { color: var(--c-text-muted); }
 .rev-axis { display: flex; justify-content: space-between; margin-top: 6px; font-size: var(--fs-xs); color: var(--c-text-faint); }
-.rev-flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-.rev-flow .st-num { margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 6px; }
-.rev-flow-sub { font-size: var(--fs-2xs); color: var(--c-text-faint); font-weight: 500; line-height: 14px; }
+.rev-stats { margin-bottom: 0; }
+.rev-stats .s-num { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rev-edit-form { margin-bottom: 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 14px; border-radius: var(--radius-lg); background: var(--c-surface-3); }
 .rev-edit-form label { display: flex; flex-direction: column; gap: 6px; font-size: var(--fs-xs); font-weight: 600; color: var(--c-text-muted); }
 .rev-edit-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
 .rev-err { grid-column: 1 / -1; margin: 0; color: var(--c-danger); font-size: var(--fs-xs); }
 .rev-err:empty { display: none; }
 @media (max-width: 640px) {
-  .rev-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .rev-prev { text-align: left; }
   .rev-edit-form { grid-template-columns: 1fr; }
 }
