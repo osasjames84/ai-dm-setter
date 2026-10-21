@@ -236,7 +236,7 @@ function countUpStats(nodes) {
   requestAnimationFrame(tick);
 }
 
-/* ============================== revenue card (Stripe "Reports overview" + money flow) ============================== */
+/* ============================== revenue card (Stripe "Reports overview") ============================== */
 const REV_PERIODS = ['1W', '4W', '1Y', 'MTD', 'QTD', 'YTD', 'ALL'];
 const revMoney = (n, cur, dp = 2) => {
   try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency: cur || 'GBP', minimumFractionDigits: dp, maximumFractionDigits: dp }).format(Number(n) || 0); }
@@ -289,12 +289,6 @@ function renderRevenueCard(r) {
     '<label>Close rate on booked calls (%)<input id="rev-rate" inputmode="decimal" placeholder="25" value="' + esc(r.close_rate_set ? r.close_rate : '') + '"></label>' +
     '<div class="rev-edit-actions"><button class="btn btn-primary btn-sm" type="submit">Save</button><button class="btn btn-ghost btn-sm" type="button" id="rev-cancel">Cancel</button></div>' +
     '<p class="rev-err" id="rev-err" role="alert"></p></form>' : '';
-  const flow = [
-    { label: 'Conversations', value: String(r.conversations), ic: 'chat' },
-    { label: 'Booked Calls', value: String(r.booked), ic: 'calendar' },
-    { label: 'Pipeline', value: noValue ? '–' : revMoney(r.pipeline, cur, 0), ic: 'trendup' },
-    { label: 'Won (Estimated)', value: noValue ? '–' : revMoney(r.estimated, cur, 0), ic: 'pound' },
-  ];
   return '<div class="card pipeline-card rev-card">' +
     '<div class="rev-head"><div class="pipe-title">Revenue</div>' +
       '<div class="rev-controls"><div class="rev-periods" role="tablist" aria-label="Period">' + REV_PERIODS.map((p) => '<button type="button" role="tab" class="chip' + (p === r.period ? ' on' : '') + '" aria-selected="' + (p === r.period) + '" data-revperiod="' + p + '">' + p + '</button>').join('') + '</div>' +
@@ -306,10 +300,6 @@ function renderRevenueCard(r) {
       (r.previous ? '<div class="rev-prev"><div class="rev-prev-l">Previous period</div><div class="rev-prev-n">' + (noValue ? r.previous.booked + ' calls' : revMoney(r.previous.pipeline, cur)) + '</div><div class="rev-range">' + esc(prevRange) + '</div></div>' : '') +
     '</div>' +
     (noValue ? '<p class="rev-hint">Add your average deal value to see these calls as money.</p>' : revenueChart(r)) +
-    '<div class="pipe-section" style="margin-top:20px">From DM to revenue</div>' +
-    // Same markup as the dashboard stat cards (label, number, icon chip), without the sub-line.
-    '<div class="stat-grid rev-stats">' + flow.map((f) => '<div class="card stat-card"><div><div class="s-label">' + f.label + '</div><div class="s-num">' + esc(f.value) + '</div>' +
-      '</div><div class="icon-chip">' + icon(f.ic, 20) + '</div></div>').join('') + '</div>' +
   '</div>';
 }
 function bindRevenueCard() {
