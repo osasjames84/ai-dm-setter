@@ -2873,7 +2873,7 @@ app.get('/api/revenue', requireAdmin, (req, res) => {
   const period = REVENUE_PERIODS.includes(String(req.query.period || '').toUpperCase()) ? String(req.query.period).toUpperCase() : 'MTD';
   const tzSetting = String(getSetting('timezone') || '').trim();
   const tz = tzSetting ? resolveTimezone(tzSetting).timezone : 'Europe/London';
-  const events = db.prepare(`SELECT e.stage, e.at, e.conversation_id, c.handle, c.display_name, c.channel FROM stage_events e JOIN conversations c ON c.id = e.conversation_id
+  const events = db.prepare(`SELECT e.stage, e.at, e.conversation_id, c.handle, c.display_name, c.channel, c.stage AS current_stage FROM stage_events e JOIN conversations c ON c.id = e.conversation_id
     WHERE e.account_id = ? AND e.stage IN ('call_booked', 'sale') AND c.channel != 'sim' AND c.false_positive = 0 ORDER BY e.at`).all(A)
     .map((e) => ({ ...e, t: Date.parse(e.at) })).filter((e) => Number.isFinite(e.t));
   const now = Date.now();
@@ -2891,6 +2891,12 @@ app.get('/api/revenue', requireAdmin, (req, res) => {
   const b = revenueBuckets(r.start, r.end, tz);
   const series = b.list.map((x) => { const n = events.filter((e) => e.stage === 'call_booked' && e.t >= x.start && e.t < x.end).length; return { key: x.key, booked: n, value: money(n * dealValue) }; });
   const pipeline = money(booked * dealValue);
+  // Keep the donut on one booking cohort so its parts always sum to its total.
+  const cohort = [...new Map(events.filter((e) => e.stage === 'call_booked' && e.t >= r.start && e.t <= r.end).map((e) => [e.conversation_id, e])).values()];
+  const wonCount = cohort.filter((e) => e.current_stage === 'sale').length;
+  const deadCount = cohort.filter((e) => e.current_stage === 'dead').length;
+  const breakdown = { total: pipeline, won: money(wonCount * dealValue), open: money((booked - wonCount - deadCount) * dealValue), lost: money(deadCount * dealValue), won_count: wonCount, lost_count: deadCount, open_count: booked - wonCount - deadCount };
+
   const recent = events.slice(-6).reverse().map((e) => ({
     name: e.display_name || (e.handle ? '@' + e.handle : 'A lead'), channel: e.channel, stage: e.stage, at: e.at, value: dealValue || null,
   }));
@@ -2902,7 +2908,7 @@ app.get('/api/revenue', requireAdmin, (req, res) => {
     conversations, booked, sales, pipeline, estimated: money(pipeline * closeRate / 100), confirmed: money(sales * dealValue),
     previous: prev && { ...prev, pipeline: money(prev.booked * dealValue), estimated: money(prev.booked * dealValue * closeRate / 100) },
     change_pct: prev && prev.booked ? Math.round(((booked - prev.booked) / prev.booked) * 1000) / 10 : null,
-    unit: b.unit, series, recent,
+    unit: b.unit, series, recent, breakdown,
   });
 });
 app.get('/api/stats', requireAdmin, (req, res) => {

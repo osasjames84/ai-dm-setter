@@ -273,37 +273,41 @@ function renderRevenueCard(r) {
   const owner = state.me?.user?.role === 'owner';
   const cur = r.currency || 'GBP';
   const noValue = !(r.deal_value > 0);
-  // Stripe-style ranges: the year shows on the end date, and on the start date when it differs.
-  const thisYear = String(new Date().getFullYear());
-  const curRange = revDate(r.range.start, r.range.start.slice(0, 4) !== thisYear) + ' – Today';
-  const prevRange = r.previous_range ? revDate(r.previous_range.start, r.previous_range.start.slice(0, 4) !== r.previous_range.end.slice(0, 4)) + ' – ' + revDate(r.previous_range.end, true) : '';
-  const delta = r.change_pct === null || r.change_pct === undefined ? '' :
-    '<span class="tag ' + (r.change_pct >= 0 ? 'green' : 'red') + '">' + (r.change_pct >= 0 ? '+' : '') + r.change_pct + '%</span>';
+  const b = r.breakdown;
+  if (!b) return '';
+  const pct = b.total > 0 ? Math.round(b.won / b.total * 100) : 0;
+  const wonShare = b.total > 0 ? b.won / b.total * 100 : 0;
+  const openShare = b.total > 0 ? b.open / b.total * 100 : 0;
+  const money = (n) => esc(revMoney(n, cur, 0));
+  const periods = { '1W': 'Last 7 days', '4W': 'Last 28 days', '1Y': 'Last 365 days', MTD: 'Month to date', QTD: 'Quarter to date', YTD: 'Year to date', ALL: 'All time' };
   const edit = state.revEditing ? '<form class="rev-edit-form" id="rev-form">' +
     '<label>Average deal value (' + esc(cur) + ')<input id="rev-deal" inputmode="decimal" placeholder="e.g. 2000" value="' + esc(r.deal_value || '') + '"></label>' +
     '<label>Close rate on booked calls (%)<input id="rev-rate" inputmode="decimal" placeholder="25" value="' + esc(r.close_rate_set ? r.close_rate : '') + '"></label>' +
     '<div class="rev-edit-actions"><button class="btn btn-primary btn-sm" type="submit">Save</button><button class="btn btn-ghost btn-sm" type="button" id="rev-cancel">Cancel</button></div>' +
     '<p class="rev-err" id="rev-err" role="alert"></p></form>' : '';
-  return '<div class="card pipeline-card rev-card">' +
-    '<div class="rev-head"><div class="pipe-title">Revenue</div>' +
-      '<div class="rev-controls"><div class="rev-periods" role="tablist" aria-label="Period">' + REV_PERIODS.map((p) => '<button type="button" role="tab" class="chip' + (p === r.period ? ' on' : '') + '" aria-selected="' + (p === r.period) + '" data-revperiod="' + p + '">' + p + '</button>').join('') + '</div>' +
-      (owner ? '<button class="btn btn-ghost btn-sm" id="rev-edit" type="button">' + (noValue ? 'Set deal value' : 'Edit') + '</button>' : '') + '</div></div>' +
-    edit +
-    '<div class="pipe-section">Pipeline generated</div>' +
-    '<div class="rev-compare">' +
-      '<div><div class="rev-num">' + (noValue ? r.booked + (r.booked === 1 ? ' call' : ' calls') : revMoney(r.pipeline, cur)) + ' ' + delta + '</div><div class="rev-range">' + esc(curRange) + '</div></div>' +
-      (r.previous ? '<div class="rev-prev"><div class="rev-prev-l">Previous period</div><div class="rev-prev-n">' + (noValue ? r.previous.booked + ' calls' : revMoney(r.previous.pipeline, cur)) + '</div><div class="rev-range">' + esc(prevRange) + '</div></div>' : '') +
-    '</div>' +
-    (noValue ? '<p class="rev-hint">Add your average deal value to see these calls as money.</p>' : revenueChart(r)) +
-  '</div>';
+  return '<div class="card pipeline-card rev-card rev-portfolio">' +
+    '<div class="rev-head"><div class="pipe-title">Pipeline value</div><div class="rev-controls">' +
+    '<select id="rev-period" aria-label="Revenue period">' + REV_PERIODS.map((p) => '<option value="' + p + '"' + (p === r.period ? ' selected' : '') + '>' + periods[p] + '</option>').join('') + '</select>' +
+    (owner ? '<button class="btn btn-ghost btn-sm" id="rev-edit" type="button">' + (noValue ? 'Set deal value' : 'Edit') + '</button>' : '') + '</div></div>' + edit +
+    '<div class="rev-portfolio-body"><div class="rev-summary"><div class="rev-muted">Revenue won</div><div class="rev-total">' + money(b.won) + '</div>' +
+    '<div class="rev-donut"><svg viewBox="0 0 120 120" role="img" aria-label="' + pct + '% of pipeline won"><circle cx="60" cy="60" r="50" class="rev-ring-track"/>' +
+    '<circle cx="60" cy="60" r="50" pathLength="100" class="rev-ring-open" stroke-dasharray="' + openShare + ' 100" stroke-dashoffset="' + (-wonShare) + '"/>' +
+    '<circle cx="60" cy="60" r="50" pathLength="100" class="rev-ring-won" stroke-dasharray="' + wonShare + ' 100"/></svg><div><strong>' + pct + '%</strong><span>won</span></div></div></div>' +
+    '<div class="rev-status"><div class="rev-muted">Status</div>' +
+    '<div class="rev-status-row"><div>Total pipeline value<small>' + money(b.open) + ' still open</small></div><strong>' + money(b.total) + '</strong></div>' +
+    '<div class="rev-status-row"><div><i class="rev-dot rev-dot-won"></i>Revenue won<small>' + b.won_count + ' confirmed sales</small></div><strong>' + money(b.won) + '</strong></div>' +
+    '<div class="rev-status-row"><div><i class="rev-dot"></i>Closed lost<small>' + b.lost_count + ' booked leads marked Dead</small></div><strong>' + money(b.lost) + '</strong></div></div></div>' +
+    (noValue ? '<p class="rev-hint">Set your average deal value to see pipeline and won values.</p>' : '') +
+    '<div class="rev-portfolio-foot">' + r.booked + ' booked calls · ' + money(r.deal_value) + ' average value<small>Bookings in the selected period, grouped by current status. Won value uses confirmed sales × average deal value.</small></div></div>';
 }
+
 function bindRevenueCard() {
   const card = $('#dash-page .rev-card');
   if (!card) return;
-  card.querySelectorAll('[data-revperiod]').forEach((b) => b.addEventListener('click', async () => {
-    state.revPeriod = b.dataset.revperiod;
+  card.querySelector('#rev-period')?.addEventListener('change', async (e) => {
+    state.revPeriod = e.target.value;
     try { state.revenue = await api('/api/revenue?period=' + state.revPeriod); renderDashboard(true); } catch (e) { toast(e.message, 'err'); }
-  }));
+  });
   card.querySelector('#rev-edit')?.addEventListener('click', () => { state.revEditing = !state.revEditing; renderDashboard(true); $('#rev-deal')?.focus(); });
   card.querySelector('#rev-cancel')?.addEventListener('click', () => { state.revEditing = false; renderDashboard(true); });
   card.querySelector('#rev-form')?.addEventListener('submit', async (e) => {
