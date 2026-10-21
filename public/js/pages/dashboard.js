@@ -246,12 +246,6 @@ const revDate = (ymd, withYear) => new Date(ymd + 'T12:00:00Z').toLocaleDateStri
 const revBucketLabel = (key, unit) => unit === 'month'
   ? new Date(key + '-15T12:00:00Z').toLocaleDateString('en-GB', { month: 'short', year: 'numeric', timeZone: 'UTC' })
   : revDate(key, false);
-const revAgo = (iso) => {
-  const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
-  if (m < 60) return m <= 1 ? 'Just now' : m + ' min ago';
-  const h = Math.round(m / 60); if (h < 24) return h + (h === 1 ? ' hour ago' : ' hours ago');
-  const d = Math.round(h / 24); return d === 1 ? 'Yesterday' : d + ' days ago';
-};
 /** Line chart of pipeline added per day/month in the dashboard's accent: straight segments, faint grid, end dot. */
 function revenueChart(r) {
   const s = r.series || [];
@@ -301,10 +295,6 @@ function renderRevenueCard(r) {
     { label: 'Pipeline', value: noValue ? '–' : revMoney(r.pipeline, cur, 0), ic: 'trendup' },
     { label: 'Won (Estimated)', value: noValue ? '–' : revMoney(r.estimated, cur, 0), ic: 'pound' },
   ];
-  const feed = (r.recent || []).slice(0, 5).map((b) => {
-    const amt = b.value ? (b.stage === 'sale' ? revMoney(b.value, cur, 0) + ' won' : '+' + revMoney(b.value, cur, 0)) : (b.stage === 'sale' ? 'Sale' : 'Booked');
-    return '<div class="perf-row"><span>' + esc(b.name) + ' ' + (b.stage === 'sale' ? 'became a client' : 'booked a call') + ' · ' + esc(revAgo(b.at)) + '</span><span>' + esc(amt) + '</span></div>';
-  }).join('');
   return '<div class="card pipeline-card rev-card">' +
     '<div class="rev-head"><div class="pipe-title">Revenue</div>' +
       '<div class="rev-controls"><div class="rev-periods" role="tablist" aria-label="Period">' + REV_PERIODS.map((p) => '<button type="button" role="tab" class="chip' + (p === r.period ? ' on' : '') + '" aria-selected="' + (p === r.period) + '" data-revperiod="' + p + '">' + p + '</button>').join('') + '</div>' +
@@ -320,8 +310,6 @@ function renderRevenueCard(r) {
     // Same markup as the dashboard stat cards (label, number, icon chip), without the sub-line.
     '<div class="stat-grid rev-stats">' + flow.map((f) => '<div class="card stat-card"><div><div class="s-label">' + f.label + '</div><div class="s-num">' + esc(f.value) + '</div>' +
       '</div><div class="icon-chip">' + icon(f.ic, 20) + '</div></div>').join('') + '</div>' +
-    '<div class="pipe-section" style="margin-top:20px">Latest bookings</div>' +
-    (feed || '<div class="perf-row perf-ok">New bookings show up here as soon as a lead books a call.</div>') +
   '</div>';
 }
 function bindRevenueCard() {
