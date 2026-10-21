@@ -1228,8 +1228,9 @@ html[data-theme="light"] :where(#view-messages) .info-card { background: #f7f8fb
 .script-card-body textarea.mono, .script-card-body input.mono { font-family: var(--font-mono); font-size: var(--fs-xs); }
 
 /* accented script cards: a coloured rail + icon carry the section identity */
-.script-card.accent { border: none; background: var(--card-bg); box-shadow: var(--card-shadow); position: relative; }
-.script-card.accent::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--acc-fg, var(--c-border)); opacity: .9; }
+/* SetDM style: each section card is tinted in its own colour with a matching hairline border. */
+.script-card.accent { border: none; background: linear-gradient(var(--acc-bg, transparent), var(--acc-bg, transparent)), var(--card-bg); box-shadow: inset 0 0 0 1px var(--acc-border, var(--c-border)); position: relative; }
+.script-card.accent .script-card-head:hover { background: rgba(255, 255, 255, .025); }
 .script-card.accent .script-card-head .icon-chip { color: var(--acc-fg, var(--c-text-muted)); }
 .script-card.accent .script-card-head .chev { color: var(--c-text-faint); }
 .script-card-body .sc-help { font-size: var(--fs-xs); line-height: 1.6; color: var(--c-text-muted); margin: 2px 0 12px; }

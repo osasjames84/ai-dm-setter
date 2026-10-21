@@ -78,13 +78,13 @@ function scriptCard(id, title, sub, ic, acc, bodyHtml, extraTitle) {
 }
 /* Accent presets keyed by colour name. */
 const ACC = {
-  blue:   { border: 'rgba(96,165,250,.28)',  bg: 'rgba(96,165,250,.05)',  fg: 'var(--blue)' },
-  purple: { border: 'rgba(167,139,250,.28)', bg: 'rgba(167,139,250,.05)', fg: 'var(--purple)' },
-  pink:   { border: 'rgba(244,114,182,.28)', bg: 'rgba(244,114,182,.05)', fg: 'var(--pink)' },
-  red:    { border: 'rgba(248,113,113,.28)', bg: 'rgba(248,113,113,.05)', fg: 'var(--red)' },
-  green:  { border: 'rgba(52,211,153,.28)',  bg: 'rgba(52,211,153,.05)',  fg: 'var(--green)' },
-  orange: { border: 'rgba(245,158,11,.32)',  bg: 'rgba(245,158,11,.05)',  fg: 'var(--orange)' },
-  indigo: { border: 'rgba(109,109,240,.32)', bg: 'rgba(90,103,242,.05)',  fg: 'var(--accent-text)' },
+  blue:   { border: 'rgba(96,165,250,.30)',  bg: 'rgba(96,165,250,.09)',  fg: 'var(--blue)' },
+  purple: { border: 'rgba(167,139,250,.28)', bg: 'rgba(167,139,250,.09)', fg: 'var(--purple)' },
+  pink:   { border: 'rgba(244,114,182,.28)', bg: 'rgba(244,114,182,.09)', fg: 'var(--pink)' },
+  red:    { border: 'rgba(248,113,113,.28)', bg: 'rgba(248,113,113,.09)', fg: 'var(--red)' },
+  green:  { border: 'rgba(52,211,153,.28)',  bg: 'rgba(52,211,153,.09)',  fg: 'var(--green)' },
+  orange: { border: 'rgba(245,158,11,.32)',  bg: 'rgba(245,158,11,.09)',  fg: 'var(--orange)' },
+  indigo: { border: 'rgba(109,109,240,.32)', bg: 'rgba(90,103,242,.09)',  fg: 'var(--accent-text)' },
 };
 const audioBtns = '<span class="set-help">Audio replies are not available here.</span>';
 
