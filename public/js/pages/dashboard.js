@@ -20,16 +20,16 @@ async function loadDashboard() {
   renderDashboard();
 }
 /** Stage icons above the funnel numbers (SetDM style). */
-const FUNNEL_ICON = { lead: 'star', engaged: 'chat', qualifying: 'hourglass', qualified: 'thumbsup', booking_sent: 'send', call_booked: 'calendar', routed: 'leaf', sale: 'pound' };
-/** Ring colour of each conversion pill, left to right. */
-const PILL_RING = ['var(--c-border-strong)', '#60a5fa', '#818cf8', '#a78bfa', '#fb923c', '#f87171', '#34d399', '#fbbf24'];
-/** Label, info, clickable stage icon, number: one column per stage above a funnel. */
-function funnelHead(stages, counts) {
-  return '<div class="fun-head" style="grid-template-columns:repeat(' + stages.length + ',1fr)">' + stages.map((s) => {
+const FUNNEL_ICON = { lead: 'star', engaged: 'chat', qualifying: 'hourglass', qualified: 'thumbsup', booking_sent: 'plane', call_booked: 'calendarcheck', routed: 'sprout', sale: 'banknote' };
+/** Retain the approved label/count/button order above the current funnel. */
+function funnelHead(stages, counts, compact = false) {
+  if (compact) return '<div class="funnel-labels" style="grid-template-columns:repeat(' + stages.length + ',1fr)">' + stages.map(s =>
+    '<div class="fl"><div class="l">' + (DASH_STAGE_LABEL[s] || STAGE_LABEL[s]) + '</div><div class="n">' + (counts[s] || 0) + '</div></div>'
+  ).join('') + '</div>';
+  return '<div class="stage-row" style="grid-template-columns:repeat(' + stages.length + ',1fr)">' + stages.map(s => {
     const label = DASH_STAGE_LABEL[s] || STAGE_LABEL[s];
-    return '<div class="fh"><div class="fh-l"><span>' + label + '</span><span title="' + esc(STAGE_INFO[s]) + '">' + icon('info', 11) + '</span></div>' +
-      '<button class="fh-ic" type="button" data-gostage="' + s + '" title="View ' + esc(label) + ' conversations" aria-label="View ' + esc(label) + ' conversations">' + icon(FUNNEL_ICON[s] || 'chat', 15) + '</button>' +
-      '<div class="fh-n">' + (counts[s] || 0).toLocaleString('en-GB') + '</div></div>';
+    return '<div class="stage-cell"><div class="st-label"><span>' + label + '</span><span title="' + esc(STAGE_INFO[s]) + '">' + icon('info', 12) + '</span></div>' +
+      '<div class="st-num">' + (counts[s] || 0) + '</div><button class="stage-chat" type="button" data-gostage="' + s + '" title="View ' + esc(label) + ' conversations" aria-label="View ' + esc(label) + ' conversations">' + icon(FUNNEL_ICON[s] || 'chat', 16) + '</button></div>';
   }).join('') + '</div>';
 }
 /** "2078 (29%)" cell: count and its share of `of`. */
@@ -55,63 +55,41 @@ function renderPerformance(p) {
   return perfTable('Opener performance', 'How often each opener gets a reply after it was sent, a booking link, and a call booked.', 'Opener', 'sent', openers, p.openers_total || {}, 'All openers', 'Openers show up here once you message someone first.') +
     perfTable('Keyword performance', 'Which Story, Reel and ad keywords turn into replies, booking links and booked calls.', 'Keyword', 'triggered', keywords, p.keywords_total || {}, 'All keywords', 'Keywords show up here once someone comments or DMs one of your trigger words.');
 }
-/**
- * SetDM's exact funnel chart, reverse-engineered from setdm.app's rendered SVG:
- * viewBox 0 0 1000 180, center line y=78, first half-height 59, and each
- * stage's half-height = previous x that stage's conversion, clamped at 1.18
- * (2%) so the ribbon tapers into a thin line instead of vanishing. Pills are
- * drawn inside the SVG (rect rx=16, card fill, ring stroke) at column centers.
- */
-function funnelSvg(vals, labels, theme = 'cur') {
-  // Compact geometry: two funnels share the card, so both must fit one screen.
-  const N = vals.length, W = 1000, CY = 52, H1 = 38, MIN = 1.18;
-  const colW = W / N;
-  const xs = vals.map((_, i) => (i + 0.5) * colW);
-  const convs = vals.map((v, i) => (i === 0 ? 1 : (vals[i - 1] ? Math.min(1, v / vals[i - 1]) : 0)));
-  const hs = []; let h = H1;
-  for (let i = 0; i < N; i++) { if (i > 0) h = h * convs[i]; hs.push(Math.max(MIN, h)); }
-  const f = (n) => n.toFixed(2);
-  const edge = (yOf) => {
-    let d = 'L ' + f(xs[0]) + ' ' + f(yOf(0));
-    for (let i = 1; i < N; i++) {
-      const mx = f((xs[i - 1] + xs[i]) / 2);
-      d += ' C ' + mx + ' ' + f(yOf(i - 1)) + ', ' + mx + ' ' + f(yOf(i)) + ', ' + f(xs[i]) + ' ' + f(yOf(i));
+/** Symmetric ribbons sampled from the supplied video reference. */
+function funnelSvg(vals, labels, variant = 'cur') {
+  if (!vals.length) return '';
+  const W = 1000, CY = 70, H = 49;
+  const xs = vals.map((_, i) => (i + 0.5) * W / vals.length);
+  const ratios = vals.map((v, i) => i === 0 ? 1 : (vals[i - 1] > 0 ? v / vals[i - 1] : null));
+  const heights = vals.map(v => vals[0] > 0 ? Math.max(0.8, H * Math.min(1, Math.max(0, v) / vals[0])) : 0.8);
+  const f = n => n.toFixed(2);
+  const ribbon = scale => {
+    const y = (i, side) => CY + side * Math.max(0.55, heights[i] * scale);
+    let d = 'M 0 ' + f(y(0, -1)) + ' L ' + f(xs[0]) + ' ' + f(y(0, -1));
+    for (let i = 1; i < xs.length; i++) {
+      const mid = f((xs[i - 1] + xs[i]) / 2);
+      d += ' C ' + mid + ' ' + f(y(i - 1, -1)) + ' ' + mid + ' ' + f(y(i, -1)) + ' ' + f(xs[i]) + ' ' + f(y(i, -1));
     }
-    return d;
-  };
-  const edgeBack = (yOf) => {
-    let d = 'L ' + f(xs[N - 1]) + ' ' + f(yOf(N - 1));
-    for (let i = N - 2; i >= 0; i--) {
-      const mx = f((xs[i] + xs[i + 1]) / 2);
-      d += ' C ' + mx + ' ' + f(yOf(i + 1)) + ', ' + mx + ' ' + f(yOf(i)) + ', ' + f(xs[i]) + ' ' + f(yOf(i));
+    const last = xs.length - 1;
+    d += ' L 1000 ' + f(y(last, -1)) + ' L 1000 ' + f(y(last, 1)) + ' L ' + f(xs[last]) + ' ' + f(y(last, 1));
+    for (let i = last - 1; i >= 0; i--) {
+      const mid = f((xs[i + 1] + xs[i]) / 2);
+      d += ' C ' + mid + ' ' + f(y(i + 1, 1)) + ' ' + mid + ' ' + f(y(i, 1)) + ' ' + f(xs[i]) + ' ' + f(y(i, 1));
     }
-    return d;
+    return d + ' L 0 ' + f(y(0, 1)) + ' Z';
   };
-  const top = (i) => CY - hs[i], bot = (i) => CY + hs[i], hlBot = (i) => CY - hs[i] + hs[i] * 0.6;
-  const main = 'M 0 ' + f(top(0)) + ' ' + edge(top) + ' L ' + W + ' ' + f(top(N - 1)) +
-    ' L ' + W + ' ' + f(bot(N - 1)) + ' ' + edgeBack(bot) + ' L 0 ' + f(bot(0)) + ' Z';
-  const hl = 'M 0 ' + f(top(0)) + ' ' + edge(top) + ' L ' + W + ' ' + f(top(N - 1)) +
-    ' L ' + W + ' ' + f(hlBot(N - 1)) + ' ' + edgeBack(hlBot) + ' L 0 ' + f(hlBot(0)) + ' Z';
-  const pills = xs.map((cx, i) => {
-    const label = i === 0 ? '100%' : (convs[i] * 100).toFixed(1) + '%';
-    const w = i === 0 ? 58 : 62;
-    const tip = i === 0 ? '100%: start' : labels[i - 1] + ' → ' + labels[i] + ': ' + label;
-    return '<g><title>' + esc(tip) + '</title>' +
-      '<rect x="' + f(cx - w / 2) + '" y="' + f(CY - 14) + '" width="' + w + '" height="28" rx="14" fill="var(--card)" stroke="' + PILL_RING[i % PILL_RING.length] + '" stroke-width="1.5"/>' +
-      '<text x="' + f(cx) + '" y="' + f(CY + 5) + '" text-anchor="middle" fill="var(--text)" font-size="13" font-weight="600" font-family="inherit">' + label + '</text></g>';
+  const color = variant === 'all' ? '#ffbd51' : '#86c6ff';
+  const rings = ['#7893ad', '#82b6ed', '#8e7ed4', '#b08bda', '#d9b580', '#d7a17b', '#70bfcd', '#79bb9b'];
+  const pills = xs.map((x, i) => {
+    const label = i === 0 ? (vals[0] > 0 ? '100%' : '—') : ratios[i] === null ? '—' : (ratios[i] * 100).toFixed(1) + '%';
+    const width = Math.max(56, label.length * 8 + 18);
+    const tip = i === 0 ? labels[0] : labels[i - 1] + ' → ' + labels[i] + ': ' + label;
+    return '<g><title>' + esc(tip) + '</title><rect x="' + f(x - width / 2) + '" y="56" width="' + width + '" height="28" rx="14" fill="var(--card)" stroke="' + rings[i % rings.length] + '" stroke-width="1.6"/>' +
+      '<text x="' + f(x) + '" y="75" text-anchor="middle" fill="var(--text)" font-size="13" font-weight="500" font-family="system-ui, sans-serif">' + label + '</text></g>';
   }).join('');
-  return '<svg viewBox="0 0 1000 118" class="funnel-svg" preserveAspectRatio="xMidYMid meet">' +
-    '<defs>' +
-    '<linearGradient id="funnelGradient-' + theme + '" x1="0%" y1="0%" x2="100%" y2="0%">' +
-    '<stop offset="0%" stop-color="var(--fun-' + theme + '-from)"/><stop offset="100%" stop-color="var(--fun-' + theme + '-to)"/></linearGradient>' +
-    '<linearGradient id="highlightGradient-' + theme + '" x1="0%" y1="0%" x2="0%" y2="100%">' +
-    '<stop offset="0%" stop-color="rgba(255, 255, 255, 0.34)"/><stop offset="100%" stop-color="rgba(255, 255, 255, 0.08)"/></linearGradient>' +
-    '<filter id="funnelShadow-' + theme + '" x="-5%" y="-15%" width="110%" height="140%">' +
-    '<feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="rgba(0,0,0,0.15)"/></filter>' +
-    '</defs>' +
-    '<path d="' + main + '" fill="url(#funnelGradient-' + theme + ')" filter="url(#funnelShadow-' + theme + ')"/>' +
-    '<path d="' + hl + '" fill="url(#highlightGradient-' + theme + ')"/>' +
-    pills + '</svg>';
+  return '<svg viewBox="0 0 1000 140" class="funnel-svg" role="img" aria-label="' + (variant === 'all' ? 'All-time' : 'Current') + ' pipeline conversion funnel">' +
+    '<path d="' + ribbon(1) + '" fill="' + color + '" fill-opacity="0.44"/>' +
+    '<path d="' + ribbon(0.6) + '" fill="' + color + '"/>' + pills + '</svg>';
 }
 /* Compact 'Performance' card: reply latency, stale-stage aging, flag reasons.
    Fields are all optional (backend may not be deployed yet) — renders nothing
@@ -201,7 +179,7 @@ function renderDashboard(force) {
     funnelHead(DASH_FUNNEL, st.by_stage) +
     funnelSvg(DASH_FUNNEL.map((s) => st.by_stage[s] || 0), funnelLabels, 'cur') +
     '<div class="fun-sec" style="margin-top:22px"><div class="fun-sec-t">All-Time Pipeline</div><div class="fun-sec-s">Cumulative totals: prospects at or past each stage, across every conversation you&#39;ve had' + (state.statsDays ? ' in this date range' : '') + '.</div></div>' +
-    funnelHead(DASH_TOTALS, st.reached) +
+    funnelHead(DASH_TOTALS, st.reached, true) +
     funnelSvg(DASH_TOTALS.map((s) => st.reached[s] || 0), DASH_TOTALS.map((s) => DASH_STAGE_LABEL[s] || STAGE_LABEL[s]), 'all') +
     '</div>' +
 

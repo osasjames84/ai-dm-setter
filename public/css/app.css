@@ -2056,3 +2056,14 @@ html.has-access-banner #main > section:not(#view-messages) { overflow: auto; min
   .ci-gen { flex-wrap: wrap; }
   .ci-search { min-width: 0; flex: 1; }
 }
+
+/* Approved funnel header layout, scoped to avoid changing the revenue card. */
+.fun-card .stage-row { gap: 0; }
+.fun-card .stage-cell { text-align: center; padding: 0; border-radius: 0; background: transparent; }
+.fun-card .st-label { font-size: 12px; font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 4px; color: var(--c-text-muted); }
+.fun-card .st-num { font-size: 22px; font-weight: 750; line-height: 28px; margin: 2px 0 6px; }
+.fun-card .stage-chat { border-radius: 12px; box-shadow: none; background: var(--c-surface-3); }
+.fun-card .fun-sec:not(:first-child) { margin-bottom: 14px; }
+.fun-card .funnel-svg + .fun-sec { border-top: 1px solid var(--c-border); padding-top: 18px; }
+.fun-card .funnel-labels .l { font-size: 12px; font-weight: 500; }
+.fun-card .funnel-labels .n { font-size: 14px; font-weight: 600; }
