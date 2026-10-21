@@ -147,6 +147,7 @@ db.exec(`
 // columns). ALTER throws if the column already exists — that's expected; ignore.
 for (const [table, col, def] of [
   ['conversations', 'kw_triggered', 'INTEGER NOT NULL DEFAULT 0'],
+  ['conversations', 'kw_keyword', 'TEXT'],         // which Story/Reel/ad keyword fired the trigger (keyword performance)
   ['conversations', 'call_time', 'TEXT'],          // ISO start time of the booked Calendly call
   ['conversations', 'vsl_sent_at', 'TEXT'],        // when the Call Booked VSL was fired (once per conv)
   ['conversations', 'reminders_sent', 'TEXT'],     // JSON array of fired reminder keys (hours_before + 'noshow')
@@ -1393,9 +1394,9 @@ function latestLeadText(convId) {
   return db.prepare("SELECT text FROM messages WHERE conversation_id = ? AND role = 'lead' ORDER BY id DESC LIMIT 1").get(convId)?.text ?? '';
 }
 
-/** Mark this conversation's Story/Reel keyword trigger as fired (once-only guard). */
-function markKwTriggered(convId) {
-  db.prepare('UPDATE conversations SET kw_triggered = 1 WHERE id = ?').run(convId);
+/** Mark this conversation's Story/Reel keyword trigger as fired (once-only guard), noting which keyword. */
+function markKwTriggered(convId, keyword = null) {
+  db.prepare('UPDATE conversations SET kw_triggered = 1, kw_keyword = COALESCE(?, kw_keyword) WHERE id = ?').run(keyword || null, convId);
 }
 
 /**
@@ -2963,6 +2964,48 @@ app.get('/api/stats', requireAdmin, (req, res) => {
     reply_latency: replyLatency,   // {ai: sec|null, human: sec|null} median lead→setter reply time (30d)
     stage_aging: stageAging,       // {stage: count} conversations stalled >48h in each active stage
     flag_reasons: flagReasons,     // [{reason, n}] top 6 needs_human reasons (first 30 chars)
+  });
+});
+
+/**
+ * Opener and keyword performance (dashboard). An opener is the first message of
+ * a conversation when it was ours (the coach or AI messaged first). Each row:
+ * how many conversations it opened, how many the lead replied to afterwards, and
+ * how many reached Booking Sent / Call Booked. Keywords are grouped by the
+ * Story/Reel/ad keyword that fired the trigger (tracked from kw_keyword onward).
+ * ?days limits both to conversations opened inside the window. Simulator excluded.
+ */
+app.get('/api/performance', requireAdmin, (req, res) => {
+  const A = req.accountId;
+  const days = Number(req.query.days);
+  const cutoff = Number.isFinite(days) && days > 0 ? new Date(Date.now() - days * 86400_000).toISOString() : '';
+  const reachedSql = (stage) => `EXISTS (SELECT 1 FROM stage_events e WHERE e.conversation_id = c.id AND e.stage = '${stage}')`;
+  const openers = db.prepare(`
+    WITH firsts AS (
+      SELECT m.conversation_id AS cid, MIN(m.id) AS mid FROM messages m
+      JOIN conversations c ON c.id = m.conversation_id
+      WHERE c.account_id = ? AND c.channel != 'sim' GROUP BY m.conversation_id
+    )
+    SELECT MIN(m.text) AS text, COUNT(*) AS sent,
+      SUM(EXISTS (SELECT 1 FROM messages r WHERE r.conversation_id = c.id AND r.role = 'lead' AND r.id > m.id)) AS replied,
+      SUM(${reachedSql('booking_sent')}) AS booking_sent,
+      SUM(${reachedSql('call_booked')}) AS call_booked
+    FROM firsts f JOIN messages m ON m.id = f.mid JOIN conversations c ON c.id = f.cid
+    WHERE m.role = 'setter' AND m.created_at >= ?
+    GROUP BY lower(trim(m.text)) ORDER BY sent DESC`).all(A, cutoff);
+  const keywords = db.prepare(`
+    SELECT COALESCE(c.kw_keyword, '') AS keyword, COUNT(*) AS triggered,
+      SUM((SELECT COUNT(*) FROM messages r WHERE r.conversation_id = c.id AND r.role = 'lead') >= 2) AS replied,
+      SUM(${reachedSql('booking_sent')}) AS booking_sent,
+      SUM(${reachedSql('call_booked')}) AS call_booked
+    FROM conversations c
+    WHERE c.account_id = ? AND c.channel != 'sim' AND c.kw_triggered = 1 AND COALESCE(c.created_at, '') >= ?
+    GROUP BY COALESCE(c.kw_keyword, '') ORDER BY triggered DESC`).all(A, cutoff);
+  const sum = (rows, k) => rows.reduce((n, r) => n + (r[k] || 0), 0);
+  const total = (rows, first) => ({ [first]: sum(rows, first), replied: sum(rows, 'replied'), booking_sent: sum(rows, 'booking_sent'), call_booked: sum(rows, 'call_booked') });
+  res.json({
+    openers: openers.slice(0, 25), openers_total: total(openers, 'sent'), openers_count: openers.length,
+    keywords, keywords_total: total(keywords, 'triggered'),
   });
 });
 

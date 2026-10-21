@@ -278,6 +278,9 @@ html[data-theme="light"] {
   --orange: var(--c-orange);   --orange-soft: color-mix(in srgb, var(--c-orange) 14%, transparent);
   --funnel-from: var(--p-indigo-400);
   --funnel-to: var(--p-indigo-600);
+  /* Dashboard funnels: current pipeline (blue) and all-time pipeline (amber) */
+  --fun-cur-from: #a5d0fb; --fun-cur-to: #60a5fa;
+  --fun-all-from: #fcd34d; --fun-all-to: #f59e0b;
 }
 
 /* light threads: lead bubbles sit on white so they separate from the page */
@@ -591,6 +594,29 @@ button:active:not(:disabled) { transform: translateY(1px); }
 .funnel-labels .fl .l { font-size: var(--fs-xs); color: var(--c-text-muted); font-weight: 600; }
 .funnel-labels .fl .n { font-size: var(--fs-md); font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
 .funnel-svg { width: 100%; height: auto; display: block; margin: 8px 0 4px; }
+.fun-card .pipe-title { margin-bottom: 14px; }
+.fun-sec { margin-bottom: 14px; }
+.fun-sec-t { font-size: var(--fs-sm); font-weight: 700; color: var(--c-text); line-height: 20px; }
+.fun-sec-s { font-size: var(--fs-xs); color: var(--c-text-faint); line-height: 16px; }
+.fun-head { display: grid; gap: 4px; }
+.fun-head .fh { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.fun-head .fh-l { font-size: var(--fs-2xs); font-weight: 600; color: var(--c-text-muted); display: flex; align-items: center; gap: 3px; line-height: 14px; }
+.fun-head .fh-l svg { color: var(--c-text-faint); }
+.fun-head .fh-ic { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--c-text-faint); background: transparent; transition: color var(--dur-fast), background-color var(--dur-fast); }
+.fun-head .fh-ic:hover { color: var(--c-accent-text); background: var(--c-accent-soft); }
+.fun-head .fh-n { font-size: 22px; font-weight: 800; line-height: 28px; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.perf-table-card { margin-top: 24px; }
+.perf-table-card .pipe-title { margin-bottom: 2px; }
+.perf-sub { margin: 0 0 14px; font-size: var(--fs-xs); color: var(--c-text-faint); }
+.perf-table-wrap { overflow-x: auto; margin: 0 -24px -24px; }
+.perf-table { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
+.perf-table th { color: var(--c-text-faint); font-size: var(--fs-2xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; text-align: left; padding: 10px 24px; border-top: 1px solid var(--c-border); border-bottom: 1px solid var(--c-border); white-space: nowrap; }
+.perf-table td { padding: 12px 24px; border-bottom: 1px solid var(--c-border-subtle); color: var(--c-text); }
+.perf-table .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.perf-table .pct { color: var(--c-text-faint); }
+.perf-table .txt { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--c-text-muted); }
+.perf-table tr.total td { font-weight: 700; border-bottom: none; color: var(--c-text); }
+.perf-table tbody tr:not(.total):hover td { background: var(--c-surface-3); }
 .outcome-strip { display: flex; gap: 22px; margin-top: 16px; padding: 0 4px; font-size: var(--fs-xs); color: var(--c-text-muted); font-weight: 500; flex-wrap: wrap; }
 .outcome-strip b { color: var(--c-text); font-weight: 700; }
 
@@ -1717,7 +1743,7 @@ html.has-access-banner #main > section:not(#view-messages) { overflow: auto; min
   .page { padding: 24px; }
   .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pipeline-card { overflow-x: auto; }
-  .stage-row, .funnel-labels, .funnel-svg { min-width: 760px; }
+  .stage-row, .funnel-labels, .funnel-svg, .fun-head { min-width: 760px; }
   .pane-info { display: none; }
   .pane-list { width: 300px; min-width: 300px; }
   .content-head { align-items: flex-start; flex-direction: column; }
@@ -1786,6 +1812,8 @@ html.has-access-banner #main > section:not(#view-messages) { overflow: auto; min
   .stat-card .icon-chip { display: none; }
   .stat-card .s-num { font-size: 26px; line-height: 32px; }
   .pipeline-card { padding: 16px; }
+  .perf-table-wrap { margin: 0 -16px -16px; }
+  .perf-table th, .perf-table td { padding-left: 16px; padding-right: 16px; }
 
   #view-messages { overflow: hidden; height: auto; }
   .pane-list { width: 100%; min-width: 0; border-right: 0; }

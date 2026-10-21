@@ -221,6 +221,35 @@ try {
     assert.equal((await api('PUT', '/api/settings', { close_rate: '250' })).status, 200);
     assert.equal((await api('GET', '/api/revenue?period=1W')).json.close_rate, 25, 'out-of-range close rate ignored');
   });
+  await test('opener and keyword performance: first message ours, replies, booking sent, call booked', async () => {
+    const ev = db.prepare('INSERT OR IGNORE INTO stage_events (conversation_id, stage, at, account_id) VALUES (?, ?, ?, ?)');
+    const msg = db.prepare("INSERT INTO messages (conversation_id, role, text, source, created_at, account_id) VALUES (?, ?, ?, ?, ?, 'acc_1')");
+    const now = new Date().toISOString();
+    const opened = async (handle, opener, reply) => {
+      const c = await lead(handle);
+      db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(c.id);
+      msg.run(c.id, 'setter', opener, 'human', now);
+      if (reply) msg.run(c.id, 'lead', 'yo', 'human', now);
+      return c;
+    };
+    const a = await opened('L_op1', 'Hey, thanks for the follow!', true);
+    const b = await opened('L_op2', '  hey, thanks for the follow!  ', false);
+    const c = await opened('L_op3', 'What are you working on?', true);
+    ev.run(a.id, 'booking_sent', now, 'acc_1'); ev.run(a.id, 'call_booked', now, 'acc_1'); ev.run(c.id, 'booking_sent', now, 'acc_1');
+    db.prepare("UPDATE conversations SET kw_triggered = 1, kw_keyword = 'coach' WHERE id IN (?, ?)").run(a.id, c.id);
+    db.prepare('UPDATE conversations SET kw_triggered = 1 WHERE id = ?').run(b.id);
+    const p = (await api('GET', '/api/performance')).json;
+    const thanks = p.openers.find((o) => o.text.trim().toLowerCase() === 'hey, thanks for the follow!');
+    assert.ok(thanks, JSON.stringify(p.openers));
+    assert.deepEqual([thanks.sent, thanks.replied, thanks.booking_sent, thanks.call_booked], [2, 1, 1, 1], 'same line grouped ignoring case and spaces');
+    const work = p.openers.find((o) => o.text === 'What are you working on?');
+    assert.deepEqual([work.sent, work.replied, work.booking_sent, work.call_booked], [1, 1, 1, 0]);
+    assert.ok(!p.openers.some((o) => o.text === 'yo'), 'a lead-first conversation has no opener');
+    assert.ok(p.openers_total.sent >= 3);
+    const coach = p.keywords.find((k) => k.keyword === 'coach');
+    assert.deepEqual([coach.triggered, coach.booking_sent, coach.call_booked], [2, 2, 1]);
+    assert.ok(p.keywords.some((k) => k.keyword === ''), 'triggers from before keyword tracking are grouped separately');
+  });
   await test('manual send with an idempotency key twice (double click) sends once', async () => {
     const c = conv('L1'); const before = sendsTo('L1').length;
     const [a, b] = await Promise.all([1, 2].map(() => api('POST', `/api/conversations/${c.id}/send`, { text: 'Quick one', idempotency_key: 'compose-123' })));
