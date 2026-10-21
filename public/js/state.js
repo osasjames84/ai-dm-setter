@@ -41,8 +41,8 @@ const state = {
   igStatus: null,
   content: null,
   contentBusy: false,
-  contentView: 'pains',
-  contentRange: 'month',
+  contentView: 'insights',
+  contentRange: 'week',
   dashAnimated: false,   // count-up + bar-grow run once per session, not on every 5s poll
 };
 const REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;

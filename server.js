@@ -2336,31 +2336,33 @@ app.post('/api/content/analyze', requireAdmin, requireActive, async (req, res) =
   if (rows.length < 20) return res.status(400).json({ error: 'not enough lead messages yet' });
   try {
     const analysis = await analyzeDms(rows);
-    // Classification pass: attach REAL per-theme message counts + dates (for the
-    // bar chart's daily/weekly/monthly filtering) instead of the model's vague
-    // count_hint. Best-effort — a failure here must not sink the whole analysis.
-    const pains = Array.isArray(analysis.pains) ? analysis.pains : [];
-    try {
-      const assignments = await classifyMessages(pains.map((p) => p.theme), rows);
-      const byTheme = new Map(); // theme index → [created_at ISO, …]
-      for (const { i, t } of assignments) {
-        const iso = toIso(rows[i]?.created_at);
-        if (!iso) continue;
-        if (!byTheme.has(t)) byTheme.set(t, []);
-        byTheme.get(t).push(iso);
+    // Classification passes: attach REAL per-theme message counts, dates and the
+    // latest matching messages (Content Insights quotes) to the pain themes and
+    // the goals, instead of the model's vague count_hint. Best-effort — a failure
+    // here must not sink the whole analysis.
+    const attach = async (themes, labelOf, kind) => {
+      try {
+        const assignments = await classifyMessages(themes.map(labelOf), rows, kind);
+        const byTheme = new Map(); // theme index → [row, …]
+        for (const { i, t } of assignments) {
+          const r = rows[i]; const iso = toIso(r?.created_at);
+          if (!iso) continue;
+          if (!byTheme.has(t)) byTheme.set(t, []);
+          byTheme.get(t).push({ handle: r.handle, text: String(r.text || '').slice(0, 240), at: iso });
+        }
+        themes.forEach((p, t) => {
+          const hits = (byTheme.get(t) || []).sort((a, b) => (a.at < b.at ? 1 : -1));
+          p.count = hits.length;
+          p.dates = hits.slice(0, 200).map((h) => h.at);
+          p.examples = hits.slice(0, 3);
+        });
+      } catch (e) {
+        console.error('[content] classify ' + kind + ' failed', e.message);
+        for (const p of themes) { p.count = Array.isArray(p.quotes) ? p.quotes.length : (p.quote ? 1 : 0); p.dates = []; }
       }
-      pains.forEach((p, t) => {
-        const dates = (byTheme.get(t) || []).sort((a, b) => (a < b ? 1 : -1)).slice(0, 200);
-        p.count = dates.length;
-        p.dates = dates;
-      });
-    } catch (e) {
-      console.error('[content] classify failed', e.message);
-      for (const p of pains) {
-        p.count = Array.isArray(p.quotes) ? p.quotes.length : 0;
-        p.dates = [];
-      }
-    }
+    };
+    await attach(Array.isArray(analysis.pains) ? analysis.pains : [], (p) => p.theme, 'pain');
+    await attach(Array.isArray(analysis.outcomes) ? analysis.outcomes : [], (o) => o.outcome, 'goal');
     const { ideas } = await generateIdeas(analysis, []);
     const payload = assignIdeaIds({
       generated_at: nowIso(),
@@ -2371,6 +2373,33 @@ app.post('/api/content/analyze', requireAdmin, requireActive, async (req, res) =
     setSetting('content_analysis', JSON.stringify(payload));
     res.json(payload);
   } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+/**
+ * Content Insights "All chats": each lead's pain and goal from their profile
+ * (extracted as they talk), with the lead's own words when we have them. ICP =
+ * reached Qualified. ?days limits to chats whose profile changed in the window.
+ * Also returns when leads reached Qualified, for the KPI sparkline.
+ */
+app.get('/api/content/chats', requireAdmin, (req, res) => {
+  const A = req.accountId;
+  const days = Number(req.query.days);
+  const cutoff = Number.isFinite(days) && days > 0 ? new Date(Date.now() - days * 86400_000).toISOString() : '';
+  const rows = db.prepare(`
+    SELECT c.id, c.handle, c.display_name, c.profile_json, c.profile_at,
+      EXISTS (SELECT 1 FROM stage_events e WHERE e.conversation_id = c.id AND e.stage = 'qualified') AS icp
+    FROM conversations c
+    WHERE c.account_id = ? AND c.channel != 'sim' AND c.profile_json IS NOT NULL AND COALESCE(c.profile_at, '') >= ?
+    ORDER BY c.profile_at DESC LIMIT 1000`).all(A, cutoff);
+  const chats = [];
+  for (const r of rows) {
+    const p = parseProfile(r.profile_json);
+    if (!p || (!p.blocker && !p.goal)) continue;
+    chats.push({ id: r.id, handle: r.handle, name: r.display_name || '', pain: p.blocker || '', pain_quote: p.blocker_quote || '', goal: p.goal || '', goal_quote: p.goal_quote || '', icp: !!r.icp, at: r.profile_at });
+  }
+  const qualified = db.prepare(`SELECT e.at FROM stage_events e JOIN conversations c ON c.id = e.conversation_id
+    WHERE e.account_id = ? AND e.stage = 'qualified' AND c.channel != 'sim' AND e.at >= ? ORDER BY e.at`).all(A, cutoff).map((x) => x.at);
+  res.json({ chats, analyzed: rows.length, qualified });
 });
 
 app.post('/api/content/more', requireAdmin, requireActive, async (req, res) => {

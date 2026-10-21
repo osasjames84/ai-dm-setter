@@ -271,6 +271,22 @@ try {
     assert.equal((await api('POST', '/api/conversations/' + c.id + '/followup/send-now', {})).status, 409, 'nothing left to send');
     assert.equal((await api('PUT', '/api/settings', { seq_lead: '[]' })).status, 200);
   });
+  await test('content insights chats: pain and goal per lead from the profile, ICP = reached qualified', async () => {
+    const a = await lead('L_ci1'), b = await lead('L_ci2'), none = await lead('L_ci3');
+    const prof = db.prepare('UPDATE conversations SET profile_json = ?, profile_at = ? WHERE id = ?');
+    prof.run(JSON.stringify({ blocker: 'Fear of failing', blocker_quote: 'scared I quit again', goal: 'Lose fat', goal_quote: 'want to finally lean out' }), new Date().toISOString(), a.id);
+    prof.run(JSON.stringify({ goal: 'Build muscle' }), new Date(Date.now() - 20 * 86400_000).toISOString(), b.id);
+    prof.run(JSON.stringify({ facts: ['age 30'] }), new Date().toISOString(), none.id);
+    db.prepare("INSERT OR IGNORE INTO stage_events (conversation_id, stage, at, account_id) VALUES (?, 'qualified', ?, 'acc_1')").run(a.id, new Date().toISOString());
+    const all = (await api('GET', '/api/content/chats')).json;
+    const ra = all.chats.find((c) => c.id === a.id);
+    assert.deepEqual([ra.pain, ra.pain_quote, ra.goal, ra.goal_quote, ra.icp], ['Fear of failing', 'scared I quit again', 'Lose fat', 'want to finally lean out', true]);
+    assert.equal(all.chats.find((c) => c.id === b.id).icp, false);
+    assert.ok(!all.chats.some((c) => c.id === none.id), 'a profile with no pain or goal is left out');
+    assert.ok(all.qualified.length >= 1);
+    const week = (await api('GET', '/api/content/chats?days=7')).json;
+    assert.ok(week.chats.some((c) => c.id === a.id) && !week.chats.some((c) => c.id === b.id), 'range filters by profile date');
+  });
   await test('manual send with an idempotency key twice (double click) sends once', async () => {
     const c = conv('L1'); const before = sendsTo('L1').length;
     const [a, b] = await Promise.all([1, 2].map(() => api('POST', `/api/conversations/${c.id}/send`, { text: 'Quick one', idempotency_key: 'compose-123' })));
