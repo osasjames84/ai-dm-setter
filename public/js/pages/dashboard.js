@@ -288,7 +288,6 @@ function renderRevenueCard(r) {
   const thisYear = String(new Date().getFullYear());
   const curRange = revDate(r.range.start, r.range.start.slice(0, 4) !== thisYear) + ' – Today';
   const prevRange = r.previous_range ? revDate(r.previous_range.start, r.previous_range.start.slice(0, 4) !== r.previous_range.end.slice(0, 4)) + ' – ' + revDate(r.previous_range.end, true) : '';
-  const pct = (a, b) => b > 0 ? Math.round((a / b) * 1000) / 10 + '%' : '–';
   const delta = r.change_pct === null || r.change_pct === undefined ? '' :
     '<span class="tag ' + (r.change_pct >= 0 ? 'green' : 'red') + '">' + (r.change_pct >= 0 ? '+' : '') + r.change_pct + '%</span>';
   const edit = state.revEditing ? '<form class="rev-edit-form" id="rev-form">' +
@@ -297,10 +296,10 @@ function renderRevenueCard(r) {
     '<div class="rev-edit-actions"><button class="btn btn-primary btn-sm" type="submit">Save</button><button class="btn btn-ghost btn-sm" type="button" id="rev-cancel">Cancel</button></div>' +
     '<p class="rev-err" id="rev-err" role="alert"></p></form>' : '';
   const flow = [
-    { label: 'Conversations', value: String(r.conversations), sub: 'Started this period', ic: 'chat' },
-    { label: 'Booked Calls', value: String(r.booked), sub: pct(r.booked, r.conversations) + ' of conversations', ic: 'calendar' },
-    { label: 'Pipeline', value: noValue ? '–' : revMoney(r.pipeline, cur, 0), sub: noValue ? 'Set a deal value' : revMoney(r.deal_value, cur, 0) + ' per booked call', ic: 'trendup' },
-    { label: 'Won (Estimated)', value: noValue ? '–' : revMoney(r.estimated, cur, 0), sub: r.close_rate + '% close rate', ic: 'pound' },
+    { label: 'Conversations', value: String(r.conversations), ic: 'chat' },
+    { label: 'Booked Calls', value: String(r.booked), ic: 'calendar' },
+    { label: 'Pipeline', value: noValue ? '–' : revMoney(r.pipeline, cur, 0), ic: 'trendup' },
+    { label: 'Won (Estimated)', value: noValue ? '–' : revMoney(r.estimated, cur, 0), ic: 'pound' },
   ];
   const feed = (r.recent || []).slice(0, 5).map((b) => {
     const amt = b.value ? (b.stage === 'sale' ? revMoney(b.value, cur, 0) + ' won' : '+' + revMoney(b.value, cur, 0)) : (b.stage === 'sale' ? 'Sale' : 'Booked');
@@ -318,9 +317,9 @@ function renderRevenueCard(r) {
     '</div>' +
     (noValue ? '<p class="rev-hint">Add your average deal value to see these calls as money.</p>' : revenueChart(r)) +
     '<div class="pipe-section" style="margin-top:20px">From DM to revenue</div>' +
-    // Same markup as the dashboard stat cards (label, number, sub-line, icon chip).
+    // Same markup as the dashboard stat cards (label, number, icon chip), without the sub-line.
     '<div class="stat-grid rev-stats">' + flow.map((f) => '<div class="card stat-card"><div><div class="s-label">' + f.label + '</div><div class="s-num">' + esc(f.value) + '</div>' +
-      '<div class="s-sub">' + esc(f.sub) + '</div></div><div class="icon-chip">' + icon(f.ic, 20) + '</div></div>').join('') + '</div>' +
+      '</div><div class="icon-chip">' + icon(f.ic, 20) + '</div></div>').join('') + '</div>' +
     '<div class="pipe-section" style="margin-top:20px">Latest bookings</div>' +
     (feed || '<div class="perf-row perf-ok">New bookings show up here as soon as a lead books a call.</div>') +
   '</div>';
