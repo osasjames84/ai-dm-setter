@@ -2480,7 +2480,26 @@ app.get('/api/conversations/:id', requireAdmin, (req, res) => {
     pending_draft: pendingDraftOf(conv.id),
     // Stage transitions for the inline "Chat moved to: X" timeline markers.
     stage_events: db.prepare('SELECT stage, at FROM stage_events WHERE conversation_id = ? ORDER BY at').all(conv.id),
+    queued_followup: scheduler.queuedFollowup(conv.id),
   });
+});
+
+/** Inbox follow-up card: send the queued follow-up now. */
+app.post('/api/conversations/:id/followup/send-now', requireAdmin, requireActive, async (req, res) => {
+  const conv = getConv(req.params.id);
+  if (!conv) return res.status(404).json({ error: 'Not found' });
+  const out = await scheduler.sendFollowupNow(conv.id);
+  if (!out.ok) return res.status(409).json({ error: out.error, status: out.status || null });
+  audit(req.accountId, req.user?.id ?? null, 'followup:send-now', conv.id + ' ' + out.status);
+  res.json({ ok: true, status: out.status, queued_followup: scheduler.queuedFollowup(conv.id) });
+});
+/** Inbox follow-up card: stop this chat's follow-ups. They start again if the lead replies. */
+app.post('/api/conversations/:id/followup/cancel', requireAdmin, (req, res) => {
+  const conv = getConv(req.params.id);
+  if (!conv) return res.status(404).json({ error: 'Not found' });
+  db.prepare('UPDATE conversations SET followup_count = 99, next_followup_at = NULL WHERE id = ?').run(conv.id);
+  audit(req.accountId, req.user?.id ?? null, 'followup:cancel', conv.id);
+  res.json({ ok: true, queued_followup: null });
 });
 
 /**

@@ -250,6 +250,27 @@ try {
     assert.deepEqual([coach.triggered, coach.booking_sent, coach.call_booked], [2, 2, 1]);
     assert.ok(p.keywords.some((k) => k.keyword === ''), 'triggers from before keyword tracking are grouped separately');
   });
+  await test('inbox follow-up card: shows the queued sequence step, sends it now, cancel stops follow-ups', async () => {
+    assert.equal((await api('PUT', '/api/settings', { seq_lead: JSON.stringify([{ message: 'Still with me, {{FIRST_NAME}}?', delay_min: 600, unit: 'minutes' }, { message: 'last nudge', delay_min: 60, unit: 'minutes' }]) })).status, 200);
+    const c = await lead('L_fu1');
+    db.prepare("UPDATE conversations SET display_name = 'Sam', stage = 'lead', mode = 'copilot', needs_human = 0 WHERE id = ?").run(c.id);
+    db.prepare("INSERT INTO messages (conversation_id, role, text, source, created_at, account_id) VALUES (?, 'setter', 'hey!', 'human', ?, 'acc_1')").run(c.id, new Date().toISOString());
+    const q = (await api('GET', '/api/conversations/' + c.id)).json.queued_followup;
+    assert.ok(q, 'a follow-up is queued after our message');
+    assert.equal(q.sequence, 'Lead'); assert.equal(q.step, 1); assert.equal(q.steps, 2); assert.equal(q.message, 'Still with me, Sam?');
+    assert.ok(new Date(q.due_at).getTime() > Date.now(), 'due in the future (test timers run in seconds)');
+    const before = sendsTo('L_fu1').length;
+    const sent = await api('POST', '/api/conversations/' + c.id + '/followup/send-now', {});
+    assert.equal(sent.status, 200, JSON.stringify(sent.json));
+    assert.equal(sent.json.status, 'sent', 'Send now sends even on copilot');
+    assert.equal(sendsTo('L_fu1').length, before + 1);
+    assert.equal(sendsTo('L_fu1').slice(-1)[0].body.message?.text, 'Still with me, Sam?');
+    assert.equal(sent.json.queued_followup.step, 2, 'next step queued');
+    assert.equal((await api('POST', '/api/conversations/' + c.id + '/followup/cancel', {})).status, 200);
+    assert.equal((await api('GET', '/api/conversations/' + c.id)).json.queued_followup, null, 'cancelled');
+    assert.equal((await api('POST', '/api/conversations/' + c.id + '/followup/send-now', {})).status, 409, 'nothing left to send');
+    assert.equal((await api('PUT', '/api/settings', { seq_lead: '[]' })).status, 200);
+  });
   await test('manual send with an idempotency key twice (double click) sends once', async () => {
     const c = conv('L1'); const before = sendsTo('L1').length;
     const [a, b] = await Promise.all([1, 2].map(() => api('POST', `/api/conversations/${c.id}/send`, { text: 'Quick one', idempotency_key: 'compose-123' })));

@@ -1967,3 +1967,22 @@ html.has-access-banner #main > section:not(#view-messages) { overflow: auto; min
   .rev-prev { text-align: left; }
   .rev-edit-form { grid-template-columns: 1fr; }
 }
+
+/* ---- inbox: queued reply + queued follow-up card (SetDM style) ---- */
+.fu-wrap { margin: 4px 16px 14px; }
+.fu-label { font-size: 13px; font-weight: 700; color: var(--c-text); }
+.fu-sub, .fu-none { font-size: 12px; color: var(--c-text-faint); margin-top: 2px; }
+.fu-box { margin-top: 8px; border: 1px solid rgba(245, 158, 11, .35); background: rgba(245, 158, 11, .08); border-radius: 12px; padding: 10px 12px; }
+.fu-box.paused { border-color: var(--c-border); background: var(--c-surface-3); }
+.fu-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fu-badge { font-size: 10px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: #f59e0b; }
+.fu-box.paused .fu-badge { color: var(--c-text-faint); }
+.fu-in { font-size: 11px; color: var(--c-text-faint); white-space: nowrap; }
+.fu-msg { font-size: 14px; font-weight: 600; color: var(--c-text); margin: 6px 0 4px; word-break: break-word; }
+.fu-vn { display: inline-flex; align-items: center; gap: 6px; }
+.fu-ai { font-weight: 500; color: var(--c-text-muted); font-size: 13px; }
+.fu-meta { font-size: 11.5px; color: var(--c-text-faint); line-height: 1.5; }
+.fu-send { width: 100%; justify-content: center; margin-top: 8px; background: #f59e0b; color: #1a1205; font-weight: 700; border: 0; }
+.fu-send:hover { background: #fbbf24; }
+.fu-send:disabled { opacity: .6; cursor: default; }
+.fu-cancel { width: 100%; justify-content: center; margin-top: 6px; }

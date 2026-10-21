@@ -493,6 +493,39 @@ function wireThread() {
     }));
   });
 }
+/** "in 11h 6m" until a follow-up is due ("due now" once it has passed). */
+function dueIn(iso) {
+  const m = Math.round((new Date(iso).getTime() - Date.now()) / 60000);
+  if (!(m > 0)) return 'due now';
+  if (m < 60) return 'in ' + m + 'm';
+  const h = Math.floor(m / 60);
+  if (h < 24) return 'in ' + h + 'h ' + (m % 60) + 'm';
+  return 'in ' + Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+}
+/** Queued reply + queued follow-up (SetDM style): what fires next, with Send now / Cancel. */
+function followupCardHtml(t) {
+  const q = t.queued_followup;
+  const reply = t.pending_draft ? 'A reply is waiting for your approval' : 'No pending replies';
+  let body;
+  if (!q) body = '<div class="fu-none">No follow-up queued</div>';
+  else {
+    const what = q.kind === 'audio' ? '<span class="fu-vn">' + icon('mic', 13) + 'Voice note</span>'
+      : q.source === 'ai' ? '<span class="fu-ai">The AI writes this one when it is due</span>' : esc(q.message);
+    body = '<div class="fu-box' + (q.paused ? ' paused' : '') + '">' +
+      '<div class="fu-top"><span class="fu-badge">Follow-up queued</span><span class="fu-in">' + esc(q.paused ? 'paused' : dueIn(q.due_at)) + '</span></div>' +
+      '<div class="fu-msg">' + what + '</div>' +
+      '<div class="fu-meta">' + (q.source === 'ai' ? 'AI follow-up' : 'Sequence: ' + esc(q.sequence)) + ' · Step ' + q.step + ' of ' + q.steps + '</div>' +
+      '<div class="fu-meta">' + esc(callTimeFmt(q.due_at)) + (q.paused ? ' · ' + esc(q.paused) : '') + '</div>' +
+      '</div>' +
+      '<button class="btn fu-send" id="fu-send" type="button">Send now</button>' +
+      '<button class="btn btn-ghost fu-cancel" id="fu-cancel" type="button">Cancel follow-up</button>';
+  }
+  return '<div class="fu-wrap">' +
+    '<div class="fu-label">Queued reply</div><div class="fu-sub">' + reply + '</div>' +
+    '<div class="fu-label" style="margin-top:12px">Queued follow-up</div>' + body +
+    '<div class="fu-sub" style="margin-top:8px">' + (t.conversation.followup_count >= 99 ? 'Follow-ups cancelled until they reply' : (t.conversation.followup_count || 0) + ' sent so far') + '</div>' +
+    '</div>';
+}
 function renderProspect() {
   const pane = $('#pane-info');
   if (!pane || !state.thread || !state.activeId) return;
@@ -516,6 +549,7 @@ function renderProspect() {
     '</div>' +
 
     '<div class="autopilot-row"><span class="ar-label">Autopilot</span>' + switchHtml(auto, '', 'id="auto-switch"', 'Autopilot') + '</div>' +
+    followupCardHtml(state.thread) +
     '<div class="info-divider"></div>' +
 
     '<div class="info-section-title">Prospect Info</div>' +
@@ -538,10 +572,7 @@ function renderProspect() {
     (c.stage === 'call_booked' ? '<label class="fp-row"><input type="checkbox" id="fp-check"' + (c.false_positive ? ' checked' : '') + '>Mark as false positive</label>' : '') +
     '<div class="info-hint">Call Booked and Sale are yours to confirm. The AI can only suggest them.</div></div>' +
 
-    '<div class="info-card"><div class="ic-title">Follow-ups</div>' +
-    '<div class="info-row"><span class="ir-label">' + c.followup_count + ' sent</span>' +
-    (c.next_followup_at ? '<span class="tag amber">' + timeFmt(c.next_followup_at) + '</span>' : '<span class="tag">none queued</span>') + '</div>' +
-    '<div class="info-hint">Follow-ups use your configured timings and sequences. Check your script and settings to adjust them.</div></div>';
+    '<div class="info-hint" style="margin:0 16px 14px">Follow-ups use your configured timings and sequences. Check your script to adjust them.</div>';
 
   $('#stage-sel').addEventListener('change', async (e) => {
     const stage = e.target.value;
@@ -555,6 +586,16 @@ function renderProspect() {
   const revive = $('#revive-btn');
   if (revive) revive.addEventListener('click', async () => {
     try { await api('/api/conversations/' + c.id, { method: 'PATCH', body: { revive: true } }); toast('Revived to Qualifying'); await loadThread(c.id); loadConvs(); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  const fuSend = $('#fu-send'), fuCancel = $('#fu-cancel');
+  if (fuSend) fuSend.addEventListener('click', async () => {
+    fuSend.disabled = true;
+    try { const r = await api('/api/conversations/' + c.id + '/followup/send-now', { method: 'POST', body: {} }); toast(r.status === 'drafted' ? 'Follow-up drafted for your approval' : 'Follow-up sent'); await loadThread(c.id); loadConvs(); }
+    catch (e) { toast(e.message, 'err'); fuSend.disabled = false; }
+  });
+  if (fuCancel) fuCancel.addEventListener('click', async () => {
+    try { await api('/api/conversations/' + c.id + '/followup/cancel', { method: 'POST', body: {} }); toast('Follow-ups cancelled for this chat'); await loadThread(c.id); loadConvs(); }
     catch (e) { toast(e.message, 'err'); }
   });
   const fp = $('#fp-check');
