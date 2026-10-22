@@ -9,6 +9,7 @@ import { igConfigured, igVerifyWebhook, igParseInbound, igSendText, igSendAudio,
 import { fbConfigured, fbSendText, fbSendAudio, fbSendAction, fbParseInbound, fbVerifyWebhook, fbPageInfo, fbSubscribePage, fbStatus, fbProfile, setFbCredsResolver, setFbOutboundContextResolver, onFbAuthError, onFbSendIssue } from './lib/messenger.js';
 import { initCrypto, encrypt, decrypt } from './lib/crypto.js';
 import { PERIODS as REVENUE_PERIODS, periodRange as revenuePeriodRange, buckets as revenueBuckets, localDate as revenueLocalDate } from './lib/revenue.js';
+import { applyVoiceFix } from './lib/voicefix.js';
 import { generateMove, varyMessage, applyOutboundFilter, stripDashes, buildSystemPrompt, repeatedPhrases, anthropicClient, PROMPT_SECTIONS } from './lib/engine.js';
 import { openStream, bump as bumpEvent, initEvents, closeStreams } from './lib/events.js';
 import { TEST_DRIVE_MIN_RUNS, testDriveCounts, testDriveState, goLiveBlockers } from './lib/golive.js';
@@ -419,6 +420,18 @@ if (getSetting('_regional_pricing_v3') == null) {
     console.log('[migrate] regional affordability block appended to Routing Rules');
   } else console.log('[migrate] regional affordability block already present');
   setSetting('_regional_pricing_v3', '1');
+}
+// One-shot (2026-10-22): the seeded lines that made the setter robotic (the
+// fixed "couple of questions ... good fit" permission line, two-pain-question
+// cap, acknowledge-then-next-question rule) rewritten to dig first, plus a
+// past-call-leads rule. Exact matches only; the previous script stays in
+// Prompt versions.
+if (getSetting('_human_voice_v1') == null) {
+  const before = Object.fromEntries(['prompt_qualification', 'prompt_custom'].map((k) => [k, String(getSetting(k) || '')]));
+  const { sections, changed } = applyVoiceFix(before);
+  for (const k of Object.keys(before)) if (sections[k] !== before[k]) setSetting(k, sections[k]);
+  setSetting('_human_voice_v1', '1');
+  console.log('[migrate] human voice script fix: ' + (changed.join('; ') || 'nothing matched (owner wording kept)'));
 }
 // One-shot (2026-09-09): the OLD July script (six-topic ladder + £300-500 gate)
 // was still sitting in About You and in the objection handlers, contradicting

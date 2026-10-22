@@ -22,6 +22,7 @@ await new Promise((r) => mock.listen(0, '127.0.0.1', r));
 process.env.ANTHROPIC_API_KEY = 'test-key';
 process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${mock.address().port}`;
 const { generateMove, repeatedPhrases, opensWithAny, timelineNote, STOCK_REACTIONS } = await import('../lib/engine.js');
+const { applyVoiceFix, VOICE_FIX } = await import('../lib/voicefix.js');
 
 let failed = 0;
 async function test(name, fn) {
@@ -80,6 +81,32 @@ await test('a normal reply goes out with no extra call', async () => {
   const out = await generateMove(settings, { handle: 'lee', stage: 'engaged' }, reopened);
   assert.equal(requests.length, 1);
   assert.deepEqual(out.messages, ['wait since may? what happened']);
+});
+
+await test('a permission ask in a chat we reopened is regenerated', async () => {
+  requests.length = 0;
+  const outbound = [
+    { role: 'setter', text: "Hey Jaala, it's Osas from Lean is Law. We spoke on a call back in May about your goals. Just checking in, are you still stuck with it, or have things moved on since then?", source: 'human', created_at: '2026-10-22T09:31:00Z' },
+    { role: 'lead', text: 'very stuck', created_at: '2026-10-22T10:10:00Z' },
+  ];
+  replies.push(move(["damn, that's exactly the kind of stuck that doesn't fix itself", "i just have a couple questions to see if it's a good fit and then we can go from there, sound good?"]));
+  replies.push(move(['very stuck how? what happened after the call']));
+  const out = await generateMove(settings, { handle: 'jaala', stage: 'lead' }, outbound);
+  assert.match(requests[0].messages.at(-1).content, /do not ask permission to ask questions/);
+  assert.match(requests[1].messages.at(-1).content, /asks permission to ask qualifying questions/);
+  assert.deepEqual(out.messages, ['very stuck how? what happened after the call']);
+});
+await test('the live-script rewrite replaces the robotic lines once and keeps owner wording', () => {
+  const qual = VOICE_FIX.filter(([k]) => k === 'prompt_qualification').map(([, a]) => a).join('\n\nOwner line that stays.\n\n');
+  const { sections, changed } = applyVoiceFix({ prompt_qualification: qual, prompt_custom: 'Reading the thread: my own rules.' });
+  assert.equal(changed.length, VOICE_FIX.length + 1);
+  assert.doesNotMatch(sections.prompt_qualification, /couple of questions to see if it's a good fit/);
+  assert.doesNotMatch(sections.prompt_qualification, /at most TWO/);
+  assert.match(sections.prompt_qualification, /DIG FIRST/);
+  assert.match(sections.prompt_qualification, /Owner line that stays\./);
+  assert.match(sections.prompt_custom, /^Reading the thread: my own rules\.\n\nPast call leads/);
+  assert.equal(applyVoiceFix(sections).changed.length, 0, 'second run changes nothing');
+  assert.equal(applyVoiceFix({ prompt_qualification: 'My own words.', prompt_custom: '' }).changed.length, 0, 'rewritten scripts are left alone');
 });
 
 mock.close();
