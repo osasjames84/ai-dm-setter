@@ -9,7 +9,7 @@ import { igConfigured, igVerifyWebhook, igParseInbound, igSendText, igSendAudio,
 import { fbConfigured, fbSendText, fbSendAudio, fbSendAction, fbParseInbound, fbVerifyWebhook, fbPageInfo, fbSubscribePage, fbStatus, fbProfile, setFbCredsResolver, setFbOutboundContextResolver, onFbAuthError, onFbSendIssue } from './lib/messenger.js';
 import { initCrypto, encrypt, decrypt } from './lib/crypto.js';
 import { PERIODS as REVENUE_PERIODS, periodRange as revenuePeriodRange, buckets as revenueBuckets, localDate as revenueLocalDate } from './lib/revenue.js';
-import { generateMove, varyMessage, applyOutboundFilter, stripDashes, buildSystemPrompt, anthropicClient, PROMPT_SECTIONS } from './lib/engine.js';
+import { generateMove, varyMessage, applyOutboundFilter, stripDashes, buildSystemPrompt, repeatedPhrases, anthropicClient, PROMPT_SECTIONS } from './lib/engine.js';
 import { openStream, bump as bumpEvent, initEvents, closeStreams } from './lib/events.js';
 import { TEST_DRIVE_MIN_RUNS, testDriveCounts, testDriveState, goLiveBlockers } from './lib/golive.js';
 import { rateLimit, envInt } from './lib/ratelimit.js';
@@ -684,8 +684,13 @@ const cleanOutbound = (t) => (getSetting('strip_dashes') === '1' ? stripDashes(t
 
 // Settings PLUS injected knowledge-base text + Calendly availability — used only
 // for engine calls so the frontend settings blob (allSettings) stays lean.
+/** Phrases the AI keeps sending across this account's chats (last 300 AI messages). */
+function overusedPhrases(accountId) {
+  const rows = db.prepare("SELECT text FROM messages WHERE account_id = ? AND role = 'setter' AND COALESCE(source, '') != 'human' AND text IS NOT NULL ORDER BY created_at DESC LIMIT 300").all(accountId);
+  return repeatedPhrases(rows.map((r) => r.text));
+}
 const engineSettings = () => {
-  const s = { ...allSettings(), knowledge_text: knowledgeText(), calendly_slots: calendlyText(currentAccountOrFirst('engine')) };
+  const s = { ...allSettings(), knowledge_text: knowledgeText(), calendly_slots: calendlyText(currentAccountOrFirst('engine')), overused_phrases: overusedPhrases(currentAccountOrFirst('engine')) };
   if (!accountActive(currentAccountOrFirst('engine'))) s.kill_switch = '1';   // pending / paused: the AI never runs
   return s;
 };
