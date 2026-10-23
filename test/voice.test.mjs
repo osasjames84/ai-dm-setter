@@ -22,7 +22,7 @@ await new Promise((r) => mock.listen(0, '127.0.0.1', r));
 process.env.ANTHROPIC_API_KEY = 'test-key';
 process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${mock.address().port}`;
 const { generateMove, repeatedPhrases, opensWithAny, timelineNote, STOCK_REACTIONS } = await import('../lib/engine.js');
-const { applyVoiceFix, VOICE_FIX } = await import('../lib/voicefix.js');
+const { applyVoiceFix, VOICE_FIX, applyVoiceFixV2 } = await import('../lib/voicefix.js');
 
 let failed = 0;
 async function test(name, fn) {
@@ -107,6 +107,45 @@ await test('the live-script rewrite replaces the robotic lines once and keeps ow
   assert.match(sections.prompt_custom, /^Reading the thread: my own rules\.\n\nPast call leads/);
   assert.equal(applyVoiceFix(sections).changed.length, 0, 'second run changes nothing');
   assert.equal(applyVoiceFix({ prompt_qualification: 'My own words.', prompt_custom: '' }).changed.length, 0, 'rewritten scripts are left alone');
+});
+
+const jaala = [
+  { role: 'setter', text: "Hey Jaala, it's Osas from Lean is Law. We spoke on a call back in May about your goals. Just checking in, are you still stuck with it, or have things moved on since then?", source: 'human', created_at: '2026-10-22T09:31:00Z' },
+  { role: 'lead', text: 'very stuck off', created_at: '2026-10-22T10:10:00Z' },
+  { role: 'setter', text: 'Since we spoke in May, what have you actually tried to get moving again', source: 'ai', created_at: '2026-10-23T17:50:00Z' },
+  { role: 'lead', text: 'i know what to do i just lost that consistency bc i went travelling for 2 months', created_at: '2026-10-23T17:52:00Z' },
+  { role: 'lead', text: 'i just need a plan to build that momentum again', created_at: '2026-10-23T17:52:30Z' },
+];
+const linkSettings = { ...settings, calendar_link: 'https://calendly.com/osasjames84' };
+await test('the booking link is held back from a lead who has not been qualified (Jaala replay)', async () => {
+  requests.length = 0;
+  replies.push(move(["two months off the back of travel will do that, especially once the routine's broken", "sounds exactly like what i sort out on a call. want to jump on one? here's the link https://calendly.com/osasjames84/30min"], 'booking_sent'));
+  replies.push(move(['if you know what to do, what has actually stopped you doing it since you got back?']));
+  const out = await generateMove(linkSettings, { handle: 'jaala', stage: 'lead' }, jaala);
+  assert.equal(requests.length, 2);
+  assert.match(requests[1].messages.at(-1).content, /has not been qualified yet/);
+  assert.deepEqual(out.messages, ['if you know what to do, what has actually stopped you doing it since you got back?']);
+});
+await test('the link goes out once the thread is qualifying, or when the lead asks for it', async () => {
+  requests.length = 0;
+  replies.push(move(['grab whichever time suits here https://calendly.com/osasjames84/30min'], 'booking_sent'));
+  let out = await generateMove(linkSettings, { handle: 'q', stage: 'qualifying' }, jaala);
+  assert.equal(requests.length, 1); assert.match(out.messages[0], /calendly/);
+  requests.length = 0;
+  replies.push(move(['course, here https://calendly.com/osasjames84/30min'], 'booking_sent'));
+  out = await generateMove(linkSettings, { handle: 'asker', stage: 'engaged' }, [...jaala, { role: 'lead', text: 'can you send the link?', created_at: '2026-10-23T17:53:00Z' }]);
+  assert.equal(requests.length, 1); assert.match(out.messages[0], /calendly/);
+});
+await test('v2 script fix: past-call leads still answer the qualifiers; "I know what to do" gets "why haven\'t you?"', () => {
+  const v1 = applyVoiceFix({ prompt_qualification: VOICE_FIX[0][1], prompt_custom: 'My rules.' }).sections;
+  // simulate a script that got the ORIGINAL v1 wording
+  const old = { prompt_qualification: v1.prompt_qualification.replace(/ If they say they already know what to do,[^.]*\./, ''), prompt_custom: v1.prompt_custom.replace(/A call months ago[\s\S]*$/, 'Only when they have opened up, offer to jump back on a call, mirroring their own words.') };
+  const { sections, changed } = applyVoiceFixV2(old);
+  assert.deepEqual(changed, ['prompt_qualification', 'prompt_custom']);
+  assert.match(sections.prompt_qualification, /ask why they haven't done it/);
+  assert.match(sections.prompt_custom, /does NOT make them qualified now/);
+  assert.doesNotMatch(sections.prompt_custom, /offer to jump back on a call, mirroring/);
+  assert.equal(applyVoiceFixV2(sections).changed.length, 0, 'second run changes nothing');
 });
 
 mock.close();

@@ -9,7 +9,7 @@ import { igConfigured, igVerifyWebhook, igParseInbound, igSendText, igSendAudio,
 import { fbConfigured, fbSendText, fbSendAudio, fbSendAction, fbParseInbound, fbVerifyWebhook, fbPageInfo, fbSubscribePage, fbStatus, fbProfile, setFbCredsResolver, setFbOutboundContextResolver, onFbAuthError, onFbSendIssue } from './lib/messenger.js';
 import { initCrypto, encrypt, decrypt } from './lib/crypto.js';
 import { PERIODS as REVENUE_PERIODS, periodRange as revenuePeriodRange, buckets as revenueBuckets, localDate as revenueLocalDate } from './lib/revenue.js';
-import { applyVoiceFix } from './lib/voicefix.js';
+import { applyVoiceFix, applyVoiceFixV2 } from './lib/voicefix.js';
 import { generateMove, varyMessage, applyOutboundFilter, stripDashes, buildSystemPrompt, repeatedPhrases, anthropicClient, PROMPT_SECTIONS } from './lib/engine.js';
 import { openStream, bump as bumpEvent, initEvents, closeStreams } from './lib/events.js';
 import { TEST_DRIVE_MIN_RUNS, testDriveCounts, testDriveState, goLiveBlockers } from './lib/golive.js';
@@ -432,6 +432,16 @@ if (getSetting('_human_voice_v1') == null) {
   for (const k of Object.keys(before)) if (sections[k] !== before[k]) setSetting(k, sections[k]);
   setSetting('_human_voice_v1', '1');
   console.log('[migrate] human voice script fix: ' + (changed.join('; ') || 'nothing matched (owner wording kept)'));
+}
+// One-shot (2026-10-23): v1's past-call-leads rule offered a call as soon as
+// the lead opened up, so the booking link went out with no qualifiers. Past-call
+// leads now still answer the qualifiers; "I know what to do" gets "why haven't you?".
+if (getSetting('_human_voice_v2') == null) {
+  const before = Object.fromEntries(['prompt_qualification', 'prompt_custom'].map((k) => [k, String(getSetting(k) || '')]));
+  const { sections, changed } = applyVoiceFixV2(before);
+  for (const k of Object.keys(before)) if (sections[k] !== before[k]) setSetting(k, sections[k]);
+  setSetting('_human_voice_v2', '1');
+  console.log('[migrate] human voice script fix v2: ' + (changed.join(', ') || 'nothing matched (owner wording kept)'));
 }
 // One-shot (2026-09-09): the OLD July script (six-topic ladder + £300-500 gate)
 // was still sitting in About You and in the objection handlers, contradicting
@@ -1155,13 +1165,22 @@ const TEST_MARKER_RE = /dmsetter\s*test|just testing|\btest \d+\/\d+\b/i;
 // returns; without this the echo is stored as a human reply and resets the
 // max-2 autopilot counter. Entries expire on their own.
 const inFlightSends = new Map(); // external_id → expiry epoch ms
-/** Append utm_content=<conversation id> to every occurrence of the account's booking link. */
+/**
+ * Append utm_content=<conversation id> to every occurrence of the account's
+ * booking link, including longer links that start with it (calendar_link
+ * "calendly.com/x" written as "calendly.com/x/30min"): the tag goes on the END
+ * of the whole URL, never inside its path. Trailing sentence punctuation stays
+ * outside the URL; a URL already carrying utm_content is left alone.
+ */
 function tagBookingLink(text, convId) {
   const link = String(getSetting('calendar_link') || '').trim().replace(/\/+$/, '');
   if (!link || !String(text).includes(link)) return text;
-  const tagged = link + (link.includes('?') ? '&' : '?') + 'utm_content=' + encodeURIComponent(convId);
-  // Replace the bare link only; a link already carrying utm_content is left alone.
-  return String(text).replace(new RegExp(escapeRe(link) + '(?![?&]utm_content=)', 'g'), tagged);
+  return String(text).replace(new RegExp(escapeRe(link) + '(?![\\w-])[^\\s<>"\')\\]]*', 'g'), (url) => {
+    const tail = url.match(/[.,!?;:]+$/)?.[0] || '';
+    const bare = tail ? url.slice(0, -tail.length) : url;
+    if (/[?&]utm_content=/.test(bare)) return url;
+    return bare + (bare.includes('?') ? '&' : '?') + 'utm_content=' + encodeURIComponent(convId) + tail;
+  });
 }
 const escapeRe = (x) => String(x).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /**
